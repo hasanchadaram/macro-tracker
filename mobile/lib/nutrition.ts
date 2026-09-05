@@ -1,4 +1,4 @@
-export type GoalType = 'Lose weight' | 'Maintain weight' | 'Gain weight' | 'Just track my food';
+export type GoalType = 'Lose weight' | 'Maintain weight' | 'Gain Muscle' | 'Just track my food' | 'Gain weight';
 
 export interface ProteinBaselineInfo {
   baseline: number;
@@ -28,7 +28,7 @@ export function getProteinBaselineInfo(
   goal?: GoalType | null
 ): ProteinBaselineInfo {
   // If target weight is not set or goal is bulking/maintaining without weight reduction
-  if (!targetWeight || isNaN(targetWeight) || goal === 'Gain weight' || goal === 'Maintain weight' || goal === 'Just track my food') {
+  if (!targetWeight || isNaN(targetWeight) || goal === 'Gain Muscle' || goal === 'Gain weight' || goal === 'Maintain weight' || goal === 'Just track my food') {
     return {
       baseline: currentWeight,
       displayBaseline: Math.round(currentWeight * 10) / 10,
@@ -90,7 +90,7 @@ export function calculateProteinWeightBaseline(
  * Cutting / Overweight / Maintain / Tracking: 2.0 g/kg
  */
 export function getDefaultProteinMultiplier(goal: GoalType | null): number {
-  if (goal === 'Gain weight') {
+  if (goal === 'Gain Muscle' || goal === 'Gain weight') {
     return 1.6;
   }
   return 2.0;
@@ -152,7 +152,7 @@ export function calculateNutritionTargets({
   if (goal === 'Lose weight') {
     calTarget -= 450;
     calTarget = Math.max(calTarget, bmr);
-  } else if (goal === 'Gain weight') {
+  } else if (goal === 'Gain Muscle' || goal === 'Gain weight') {
     calTarget += 300;
   }
 

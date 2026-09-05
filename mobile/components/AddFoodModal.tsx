@@ -9,6 +9,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -124,11 +125,15 @@ export function AddFoodModal({
     });
     if (!pickerResult.canceled && pickerResult.assets[0].uri) {
       await processImage(pickerResult.assets[0].uri);
+      setMode('describe');
     }
   };
 
+  const hasImage = !!imageUri || !!imageBase64;
+  const hasContent = !!description.trim() || hasImage;
+
   const handleSubmitDescribe = () => {
-    if (description.trim() || imageUri || imageBase64) {
+    if (hasContent) {
       onAnalyze(description.trim(), imageBase64, imageUri);
       handleClose();
     }
@@ -266,7 +271,9 @@ export function AddFoodModal({
             /* Describe Mode (Text + optional Image) */
             <View style={styles.describeContainer}>
               <Text style={[styles.describeHint, { color: textSecondary }]}>
-                Describe your meal, or attach a photo, or both!
+                {hasImage
+                  ? 'Photo attached! You can add an optional description or analyze directly.'
+                  : 'Describe your meal, attach a photo, or both!'}
               </Text>
               
               <View style={styles.imageActions}>
@@ -276,7 +283,7 @@ export function AddFoodModal({
                 >
                   <Ionicons name="camera" size={20} color="#10B981" />
                   <Text style={[styles.imageBtnText, { color: textPrimary }]}>
-                    {imageBase64 ? 'Retake Photo' : 'Take Photo'}
+                    {hasImage ? 'Retake Photo' : 'Take Photo'}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -291,10 +298,26 @@ export function AddFoodModal({
               </View>
 
               {imageUri && (
-                <View style={[styles.imagePreviewWrap, { borderColor }]}>
-                  <Text style={{ color: textPrimary, fontSize: 12, marginBottom: 4 }}>
-                    Image attached ✅
-                  </Text>
+                <View style={[styles.imagePreviewWrap, { backgroundColor: buttonBg, borderColor }]}>
+                  <Image source={{ uri: imageUri }} style={styles.imageThumbnail} />
+                  <View style={styles.imagePreviewDetails}>
+                    <Text style={[styles.imageAttachedText, { color: textPrimary }]}>
+                      Photo ready for analysis
+                    </Text>
+                    <Text style={[styles.imageAttachedSub, { color: textSecondary }]}>
+                      Optional: add details below for higher accuracy
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.imageRemoveBtn}
+                    onPress={() => {
+                      setImageUri(undefined);
+                      setImageBase64(undefined);
+                    }}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="close-circle" size={22} color={textSecondary} />
+                  </Pressable>
                 </View>
               )}
 
@@ -303,13 +326,17 @@ export function AddFoodModal({
                   styles.input,
                   { backgroundColor: inputBg, color: textPrimary, borderColor },
                 ]}
-                placeholder="e.g. 2 scrambled eggs and 1 slice of toast, or 'I ate half of this'"
+                placeholder={
+                  hasImage
+                    ? "Optional: e.g. 'I ate half of this', 'extra dressing'..."
+                    : "e.g. 2 scrambled eggs and 1 slice of toast, or 'I ate half of this'"
+                }
                 placeholderTextColor={textSecondary}
                 multiline
                 maxLength={120}
                 value={description}
                 onChangeText={setDescription}
-                autoFocus={!imageBase64} // Auto focus if no image was taken yet
+                autoFocus={!hasImage}
               />
 
               <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4, marginBottom: 8 }}>
@@ -329,10 +356,10 @@ export function AddFoodModal({
                 <Pressable
                   style={[
                     styles.submitButton,
-                    (!description.trim() && !imageBase64) && styles.submitButtonDisabled,
+                    !hasContent && styles.submitButtonDisabled,
                   ]}
                   onPress={handleSubmitDescribe}
-                  disabled={!description.trim() && !imageBase64}
+                  disabled={!hasContent}
                 >
                   <Text style={styles.submitButtonText}>Analyze</Text>
                 </Pressable>
@@ -474,10 +501,31 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   imagePreviewWrap: {
-    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
     borderRadius: 12,
     borderWidth: 1,
-    alignItems: 'center',
+    gap: 12,
+  },
+  imageThumbnail: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+  },
+  imagePreviewDetails: {
+    flex: 1,
+    gap: 2,
+  },
+  imageAttachedText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  imageAttachedSub: {
+    fontSize: 12,
+  },
+  imageRemoveBtn: {
+    padding: 4,
   },
   input: {
     borderWidth: 1,

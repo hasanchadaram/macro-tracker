@@ -117,9 +117,9 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       handleClose();
       showAlert(
-        type === 'bug' ? '🐛 Bug Report Submitted' : '💡 Feedback Received',
+        type === 'bug' ? '🐛 Bug / Complaint Submitted' : '💡 Feedback Received',
         type === 'bug'
-          ? 'Thank you for reporting this bug! Our team has received your report and will look into it promptly.'
+          ? 'Thank you for reaching out! Our team has received your submission and will review it promptly.'
           : 'Thank you for your feedback! Your ideas help make the app better for everyone.'
       );
     } catch (err: any) {
@@ -151,7 +151,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
                 />
               </View>
               <Text style={[styles.title, { color: textPrimary }]}>
-                {type === 'bug' ? 'Report a Bug' : 'Share Feedback'}
+                {type === 'bug' ? 'Bug / Complaint' : 'Share Feedback'}
               </Text>
             </View>
             <Pressable onPress={handleClose} style={styles.closeBtn} hitSlop={10}>
@@ -180,7 +180,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
                     { color: type === 'bug' ? '#FFFFFF' : textSecondary },
                   ]}
                 >
-                  Bug Report
+                  Bug / Complaint
                 </Text>
               </Pressable>
 
@@ -227,7 +227,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
                 ]}
                 placeholder={
                   type === 'bug'
-                    ? 'e.g. Calorie ring not updating on meal delete'
+                    ? 'e.g. Issue logging lunch, or complaint about food scanner'
                     : 'e.g. Add dark mode widget to home screen'
                 }
                 placeholderTextColor={textSecondary}
@@ -258,7 +258,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
                 ]}
                 placeholder={
                   type === 'bug'
-                    ? 'Please describe what happened, what you expected, and steps to reproduce the issue...'
+                    ? 'Please describe the bug, issue, or complaint in detail...'
                     : 'Describe your idea or suggestion and how it would improve your experience...'
                 }
                 placeholderTextColor={textSecondary}

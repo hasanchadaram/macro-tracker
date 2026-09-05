@@ -6,6 +6,8 @@ import {
   Text,
   View,
   Dimensions,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -72,6 +74,48 @@ const extractEdgeFunctionError = async (error: any): Promise<string> => {
   } catch (e) {}
   return error.message || 'Edge Function returned an error.';
 };
+
+/**
+ * Resolves the user's preferred greeting name with robust fallback hierarchy:
+ * 1. Database profile full_name / display_name
+ * 2. OAuth provider metadata (Google full_name, name, given_name + family_name)
+ * 3. Locally cached name from previous active session
+ * 4. Capitalized email prefix as clean last resort
+ */
+function resolveUserName(
+  profileData?: Partial<Profile> | null,
+  userMetadata?: Record<string, any> | null,
+  fallbackEmail?: string,
+  cachedName?: string | null
+): string {
+  const dbFullName = profileData?.full_name?.trim();
+  if (dbFullName) return dbFullName;
+
+  const dbDisplayName = profileData?.display_name?.trim();
+  if (dbDisplayName) return dbDisplayName;
+
+  const metaFullName = userMetadata?.full_name?.trim();
+  if (metaFullName) return metaFullName;
+
+  const metaName = userMetadata?.name?.trim();
+  if (metaName) return metaName;
+
+  const combinedGivenFamily = `${userMetadata?.given_name || ''} ${userMetadata?.family_name || ''}`.trim();
+  if (combinedGivenFamily) return combinedGivenFamily;
+
+  if (cachedName && cachedName.trim() && cachedName.trim() !== 'User') {
+    return cachedName.trim();
+  }
+
+  if (fallbackEmail && fallbackEmail.includes('@')) {
+    const prefix = fallbackEmail.split('@')[0];
+    if (prefix) {
+      return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+    }
+  }
+
+  return 'User';
+}
 
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
@@ -239,57 +283,131 @@ export default function HomeScreen() {
 
   // Initial load on mount (Authentication and Profile)
   useEffect(() => {
+    let isMounted = true;
+
     const init = async () => {
       try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
-        if (authError || !user) {
-          console.warn("Auth check failed or session expired:", authError);
-          await supabase.auth.signOut();
-          setIsDashboardLoading(false);
+        // 1. Instant session check from local storage (eliminates idle wake lag / network delays)
+        const { data: { session } } = await supabase.auth.getSession();
+        let currentUser = session?.user;
+
+        // Immediately populate cached user name and email from local storage so there's zero UI flash
+        if (currentUser?.id) {
+          if (isMounted) {
+            setUserId(currentUser.id);
+            setUserEmail(currentUser.email || '');
+          }
+          const cachedName = await AsyncStorage.getItem(`cached_user_name_${currentUser.id}`);
+          if (cachedName && isMounted) {
+            setUserName(cachedName);
+          }
+        }
+
+        // 2. Validate/refresh user with getUser()
+        try {
+          const { data: userData, error: authError } = await supabase.auth.getUser();
+          if (userData?.user) {
+            currentUser = userData.user;
+          } else if (authError && !currentUser) {
+            console.warn("Auth check failed or session expired:", authError);
+            await supabase.auth.signOut();
+            if (isMounted) setIsDashboardLoading(false);
+            return;
+          }
+        } catch (authErr) {
+          console.warn("getUser network error, using local session user:", authErr);
+        }
+
+        if (!currentUser) {
+          if (isMounted) setIsDashboardLoading(false);
           return;
         }
 
-        setUserEmail(user.email || '');
-        setUserId(user.id);
-
-        // Fetch or create profile
-        let { data: profileData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .maybeSingle();
-
-        const actualName = user.user_metadata?.full_name || '';
-          
-        if (!profileData) {
-          const { data: newProfile } = await supabase
-            .from('profiles')
-            .insert({ id: user.id, full_name: actualName })
-            .select()
-            .single();
-          profileData = newProfile;
-        } else if (actualName && profileData.full_name !== actualName) {
-          const { data: updatedProfile } = await supabase
-            .from('profiles')
-            .update({ full_name: actualName })
-            .eq('id', user.id)
-            .select()
-            .single();
-          if (updatedProfile) profileData = updatedProfile;
+        if (isMounted) {
+          setUserEmail(currentUser.email || '');
+          setUserId(currentUser.id);
         }
-        
-        setUserName(profileData?.full_name || profileData?.display_name || user.email?.split('@')[0] || 'User');
-        setProfile(profileData as Profile);
-        
+
+        const actualName = (
+          currentUser.user_metadata?.full_name ||
+          currentUser.user_metadata?.name ||
+          `${currentUser.user_metadata?.given_name || ''} ${currentUser.user_metadata?.family_name || ''}`.trim()
+        );
+
+        // 3. Fetch profile with resilience against idle reconnections
+        let profileData: Profile | null = null;
+        try {
+          const { data, error: profileErr } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', currentUser.id)
+            .maybeSingle();
+
+          if (!profileErr && data) {
+            profileData = data as Profile;
+          }
+        } catch (fetchErr) {
+          console.warn("Profile fetch error (offline or network wake):", fetchErr);
+        }
+
+        // 4. Ensure profile row exists or sync updated name
+        if (!profileData) {
+          try {
+            const { data: upsertedProfile } = await supabase
+              .from('profiles')
+              .upsert(
+                { id: currentUser.id, full_name: actualName || null },
+                { onConflict: 'id' }
+              )
+              .select()
+              .maybeSingle();
+            if (upsertedProfile) profileData = upsertedProfile as Profile;
+          } catch (upsertErr) {
+            console.warn("Profile upsert error:", upsertErr);
+          }
+        } else if (actualName && profileData.full_name !== actualName) {
+          try {
+            const { data: updatedProfile } = await supabase
+              .from('profiles')
+              .update({ full_name: actualName })
+              .eq('id', currentUser.id)
+              .select()
+              .maybeSingle();
+            if (updatedProfile) profileData = updatedProfile as Profile;
+          } catch (updateErr) {
+            console.warn("Profile name sync error:", updateErr);
+          }
+        }
+
+        // 5. Resolve user greeting name and persist to local cache
+        const cachedName = await AsyncStorage.getItem(`cached_user_name_${currentUser.id}`);
+        const finalName = resolveUserName(
+          profileData,
+          currentUser.user_metadata,
+          currentUser.email,
+          cachedName
+        );
+
+        if (isMounted) {
+          setUserName(finalName);
+          if (profileData) {
+            setProfile(profileData);
+          }
+        }
+
+        if (finalName && finalName !== 'User') {
+          await AsyncStorage.setItem(`cached_user_name_${currentUser.id}`, finalName);
+        }
+
         let needsOnboarding = false;
         if (profileData && !profileData.target_calories) {
-          setShowOnboarding(true);
+          if (isMounted) setShowOnboarding(true);
           needsOnboarding = true;
         }
 
         // Calculate Day Number
-        const accountCreatedAt = user.created_at || profileData?.created_at;
-        if (accountCreatedAt) {
+        const accountCreatedAt = currentUser.created_at || profileData?.created_at;
+        if (accountCreatedAt && isMounted) {
           const start = new Date(accountCreatedAt);
           start.setHours(0,0,0,0);
           const current = new Date(selectedDate);
@@ -302,19 +420,24 @@ export default function HomeScreen() {
         // Check if we should show walkthrough
         if (!needsOnboarding) {
           const hasSeenWalkthrough = await AsyncStorage.getItem('has_seen_walkthrough');
-          if (!hasSeenWalkthrough) {
+          if (!hasSeenWalkthrough && isMounted) {
             setShowWalkthrough(true);
           }
         }
 
         initCatalog(supabase);
-        fetchDashboardData(user.id, selectedDate);
+        fetchDashboardData(currentUser.id, selectedDate);
       } catch (e) {
         console.error("Init dashboard error:", e);
-        setIsDashboardLoading(false);
+        if (isMounted) setIsDashboardLoading(false);
       }
     };
+
     init();
+
+    return () => {
+      isMounted = false;
+    };
   }, [fetchDashboardData]);
 
   // Handle date changes without re-authenticating
@@ -334,6 +457,45 @@ export default function HomeScreen() {
     fetchDashboardData(userId, selectedDate);
   }, [selectedDate, userId, fetchDashboardData]);
 
+  // Listen for AppState changes (e.g. app waking up after being idle in background)
+  useEffect(() => {
+    const handleAppStateChange = async (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        // 1. Check if date rolled over to a new day while idle
+        const todayStr = getLocalDateString();
+        if (selectedDate !== todayStr && selectedDate < todayStr) {
+          setSelectedDate(todayStr);
+        }
+
+        // 2. Silently refresh profile & user name if missing or needed
+        if (userId) {
+          try {
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', userId)
+              .maybeSingle();
+
+            if (profileData) {
+              setProfile(profileData as Profile);
+              const cached = await AsyncStorage.getItem(`cached_user_name_${userId}`);
+              const name = resolveUserName(profileData as Profile, null, userEmail, cached);
+              if (name && name !== 'User') {
+                setUserName(name);
+                await AsyncStorage.setItem(`cached_user_name_${userId}`, name);
+              }
+            }
+          } catch (e) {
+            console.warn("Background resume profile refresh error:", e);
+          }
+        }
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [userId, selectedDate, userEmail]);
+
   // Only re-fetch profile/goals when returning from Settings after explicitly saving new goals
   useFocusEffect(
     useCallback(() => {
@@ -351,7 +513,12 @@ export default function HomeScreen() {
 
               if (profileData) {
                 setProfile(profileData as Profile);
-                setUserName(profileData.full_name || profileData.display_name || userEmail.split('@')[0] || 'User');
+                const cached = await AsyncStorage.getItem(`cached_user_name_${userId}`);
+                const name = resolveUserName(profileData as Profile, null, userEmail, cached);
+                setUserName(name);
+                if (name && name !== 'User') {
+                  await AsyncStorage.setItem(`cached_user_name_${userId}`, name);
+                }
               }
               fetchDashboardData(userId, selectedDate);
             }
@@ -1191,7 +1358,7 @@ export default function HomeScreen() {
           </View>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Pressable style={[styles.profileButton, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }]} onPress={() => router.push('/settings')}>
-              <Ionicons name="settings-outline" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
+              <Ionicons name="person-outline" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
             </Pressable>
             <Pressable style={[styles.profileButton, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }]} onPress={handleSignOut}>
               <Ionicons name="log-out-outline" size={22} color={isDark ? '#94A3B8' : '#64748B'} />

@@ -62,6 +62,11 @@ function computeTotals(foods: FoodItem[]): MealTotals {
   );
 }
 
+export interface ReviewFoodItem extends FoodItem {
+  _id: string;
+  _quantityStr?: string;
+}
+
 export function MealReviewModal({
   visible,
   mealType,
@@ -75,13 +80,14 @@ export function MealReviewModal({
   const isDark = colorScheme === 'dark';
 
   // We keep the *original* estimate to compute ratios from, and a *current* list
-  // that tracks the user's edits.
-  const [originalFoods, setOriginalFoods] = useState<FoodItem[]>([]);
-  const [currentFoods, setCurrentFoods] = useState<FoodItem[]>([]);
+  // that tracks the user's edits with stable unique _id keys.
+  const [originalFoods, setOriginalFoods] = useState<ReviewFoodItem[]>([]);
+  const [currentFoods, setCurrentFoods] = useState<ReviewFoodItem[]>([]);
   const [mealName, setMealName] = useState('');
   const [title, setTitle] = useState('');
   
   const firstSwipeableRef = React.useRef<Swipeable>(null);
+  const swipeableRowRefs = React.useRef<Map<string, Swipeable>>(new Map());
   const tipAnim = useSharedValue(0);
   const tipTimeout1 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimeout2 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,8 +129,12 @@ export function MealReviewModal({
   // Re-initialize when the estimate changes
   React.useEffect(() => {
     if (estimate) {
-      setOriginalFoods(estimate.foods);
-      setCurrentFoods(estimate.foods);
+      const foodsWithId: ReviewFoodItem[] = (estimate.foods || []).map((f, i) => ({
+        ...f,
+        _id: (f as any).id || (f as any)._id || `food_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 8)}`,
+      }));
+      setOriginalFoods(foodsWithId);
+      setCurrentFoods(foodsWithId);
       setMealName(estimate.meal_name);
       setTitle(estimate.title || estimate.meal_name);
     }
@@ -133,7 +143,7 @@ export function MealReviewModal({
   const totals = computeTotals(currentFoods);
 
   const handleQuantityChange = useCallback(
-    (index: number, value: string) => {
+    (foodId: string, value: string) => {
       // Strip anything that is not a digit or a decimal point
       let sanitizedValue = value.replace(/[^0-9.]/g, '');
       
@@ -145,21 +155,32 @@ export function MealReviewModal({
 
       const numericValue = parseFloat(sanitizedValue) || 0;
       
+      const orig = originalFoods.find(f => f._id === foodId);
+      if (!orig) return;
+
       setCurrentFoods((prev) => {
-        const updated = [...prev];
-        // Recalculate proportionally from the *original* food item's values
-        const recalculated = recalculateFoodItem(originalFoods[index], numericValue);
-        // Store _quantityStr to preserve things like "1." or "1.0" while typing
-        updated[index] = { ...recalculated, quantity: numericValue, _quantityStr: sanitizedValue } as any;
-        return updated;
+        return prev.map(f => {
+          if (f._id !== foodId) return f;
+          const recalculated = recalculateFoodItem(orig, numericValue);
+          return {
+            ...recalculated,
+            _id: f._id,
+            quantity: numericValue,
+            _quantityStr: sanitizedValue,
+          };
+        });
       });
     },
     [originalFoods]
   );
 
-  const handleDeleteItem = useCallback((indexToRemove: number) => {
-    setCurrentFoods((prev) => prev.filter((_, idx) => idx !== indexToRemove));
-    setOriginalFoods((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  const handleDeleteItem = useCallback((foodId: string) => {
+    // Immediately close swipeable if active before deleting from state
+    swipeableRowRefs.current.get(foodId)?.close();
+    swipeableRowRefs.current.delete(foodId);
+
+    setCurrentFoods((prev) => prev.filter((f) => f._id !== foodId));
+    setOriginalFoods((prev) => prev.filter((f) => f._id !== foodId));
   }, []);
 
   const validFoods = currentFoods.filter(f => (f.calories || 0) > 0 && (f.quantity || 0) > 0);
@@ -175,7 +196,9 @@ export function MealReviewModal({
       return;
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    onSave(mealName, title, validFoods, computeTotals(validFoods));
+    // Strip internal UI properties (_id, _quantityStr)
+    const cleanedFoods: FoodItem[] = validFoods.map(({ _id, _quantityStr, ...rest }) => rest);
+    onSave(mealName, title, cleanedFoods, computeTotals(cleanedFoods));
   };
 
   const cardBg = isDark ? '#1E293B' : '#FFFFFF';
@@ -264,12 +287,19 @@ export function MealReviewModal({
               ) : (
                 currentFoods.map((food, index) => (
                   <Swipeable
-                    key={index}
-                    ref={index === 0 ? firstSwipeableRef : null}
+                    key={food._id}
+                    ref={(ref) => {
+                      if (ref) {
+                        swipeableRowRefs.current.set(food._id, ref);
+                        if (index === 0) (firstSwipeableRef as any).current = ref;
+                      } else {
+                        swipeableRowRefs.current.delete(food._id);
+                      }
+                    }}
                     renderRightActions={() => (
                       <Pressable
                         style={styles.deleteButton}
-                        onPress={() => handleDeleteItem(index)}
+                        onPress={() => handleDeleteItem(food._id)}
                       >
                         <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
                       </Pressable>
@@ -288,8 +318,8 @@ export function MealReviewModal({
                             styles.quantityInput,
                             { backgroundColor: inputBg, color: textPrimary, borderColor },
                           ]}
-                          value={(food as any)._quantityStr !== undefined ? (food as any)._quantityStr : (food.quantity ? food.quantity.toString() : '')}
-                          onChangeText={(v) => handleQuantityChange(index, v)}
+                          value={food._quantityStr !== undefined ? food._quantityStr : (food.quantity ? food.quantity.toString() : '')}
+                          onChangeText={(v) => handleQuantityChange(food._id, v)}
                           keyboardType="decimal-pad"
                           selectTextOnFocus
                         />

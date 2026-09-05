@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Pressable, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import { supabase } from '@/lib/supabase';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAlert } from '@/components/ui/CustomAlert';
@@ -15,7 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import type { Profile } from '@/lib/types';
 
-export default function SettingsScreen() {
+export default function ProfileScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -33,10 +34,11 @@ export default function SettingsScreen() {
   const [hasSeenTips, setHasSeenTips] = useState(true);
   const [aiSettings, setAiSettings] = useState({ byok_enabled: true, has_custom_key: false });
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
+  const [userEmail, setUserEmail] = useState<string>('');
   const [onboardingInitialStep, setOnboardingInitialStep] = useState<'intro' | 'review'>('intro');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   const appVersion = Constants.expoConfig?.version || '1.0.0';
-
 
   const pulseAnim = useSharedValue(1);
 
@@ -84,6 +86,9 @@ export default function SettingsScreen() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
+      if (user.email) {
+        setUserEmail(user.email);
+      }
       const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (data) {
         setCurrentProfile(data as Profile);
@@ -126,19 +131,116 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleSignOutPrompt = () => {
+    showAlert('Log Out', 'Are you sure you want to log out of Day Fuel?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await supabase.auth.signOut();
+          } catch (e: any) {
+            showAlert('Error', e.message || 'Could not sign out');
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteAccountPrompt = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    showAlert(
+      'Delete Account Permanently?',
+      'Warning: This action will permanently erase your entire account and all associated data, including your meals, calories, weight logs, exercise tracking, and personal settings.\n\nThis cannot be undone. Are you sure you want to proceed?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: executeAccountDeletion,
+        },
+      ]
+    );
+  };
+
+  const executeAccountDeletion = async () => {
+    setIsDeletingAccount(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
+
+      // 1. Call Supabase RPC to delete user account and associated rows
+      const { error } = await supabase.rpc('delete_user_account');
+      if (error) throw error;
+
+      // 2. Wipe all local device storage & cache
+      if (userId) {
+        await AsyncStorage.removeItem(`cached_user_name_${userId}`);
+      }
+      await AsyncStorage.multiRemove([
+        'has_seen_walkthrough',
+        'has_seen_add_food_tip',
+        'has_seen_swipe_delete_tip',
+        'has_seen_swipe_delete_tip_home',
+        'has_seen_tips',
+        'should_refresh_home_goals',
+      ]);
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // 3. Sign out of Supabase auth session to trigger root redirect to Login
+      await supabase.auth.signOut();
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      showAlert('Account Deletion Failed', err.message || 'Could not delete your account. Please try again later.');
+      setIsDeletingAccount(false);
+    }
+  };
+
+  // Profile Header Card details
+  const userName = currentProfile?.full_name || currentProfile?.display_name || (userEmail ? userEmail.split('@')[0] : 'User');
+  const userInitial = (userName.trim()[0] || 'U').toUpperCase();
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={textPrimary} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: textPrimary }]}>Settings</Text>
+        <Text style={[styles.headerTitle, { color: textPrimary }]}>Profile</Text>
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* User Profile Card */}
+        <View style={[styles.profileCard, { backgroundColor: bgSurface, borderColor }]}>
+          <View style={styles.profileAvatar}>
+            <Text style={styles.profileAvatarText}>{userInitial}</Text>
+          </View>
+          <View style={styles.profileDetails}>
+            <Text style={[styles.profileName, { color: textPrimary }]} numberOfLines={1}>
+              {userName}
+            </Text>
+            {userEmail ? (
+              <Text style={[styles.profileEmail, { color: textSecondary }]} numberOfLines={1}>
+                {userEmail}
+              </Text>
+            ) : null}
+            {currentProfile?.goal ? (
+              <View style={styles.profileGoalBadge}>
+                <Ionicons name="trophy-outline" size={13} color="#6366F1" />
+                <Text style={styles.profileGoalText}>{currentProfile.goal}</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        {/* 1. NUTRITION & GOALS */}
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: textSecondary }]}>ACCOUNT & GOALS</Text>
+          <Text style={[styles.sectionTitle, { color: textSecondary }]}>NUTRITION & GOALS</Text>
           
           <View style={[styles.card, { backgroundColor: bgSurface, borderColor }]}>
             <Pressable 
@@ -161,32 +263,44 @@ export default function SettingsScreen() {
                 <View style={[styles.iconContainer, { backgroundColor: 'rgba(99, 102, 241, 0.15)' }]}>
                   <Ionicons name="flame-outline" size={20} color="#6366F1" />
                 </View>
-                <View>
+                <View style={styles.itemTextContainer}>
                   <Text style={[styles.listItemTitle, { color: textPrimary }]}>Nutrition Goals</Text>
-                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Set your target calories and macros</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Target calories, macros & weight goal</Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color={textSecondary} />
             </Pressable>
-            
-            <View style={[styles.divider, { backgroundColor: borderColor }]} />
-            
-            <Pressable 
-              style={styles.listItem}
-              onPress={() => supabase.auth.signOut()}
-            >
-              <View style={styles.listItemLeft}>
-                <View style={[styles.iconContainer, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
-                  <Ionicons name="log-out-outline" size={20} color="#EF4444" />
-                </View>
-                <View>
-                  <Text style={[styles.listItemTitle, { color: '#EF4444' }]}>Log Out</Text>
-                </View>
-              </View>
-            </Pressable>
           </View>
         </View>
 
+        {/* 2. AI FEATURES */}
+        {aiSettings.byok_enabled && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: textSecondary }]}>AI FEATURES</Text>
+            
+            <View style={[styles.card, { backgroundColor: bgSurface, borderColor }]}>
+              <Pressable 
+                style={styles.listItem}
+                onPress={() => setByokVisible(true)}
+              >
+                <View style={styles.listItemLeft}>
+                  <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                    <Ionicons name="key-outline" size={20} color="#10B981" />
+                  </View>
+                  <View style={styles.itemTextContainer}>
+                    <Text style={[styles.listItemTitle, { color: textPrimary }]}>Custom API Key</Text>
+                    <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
+                      {aiSettings.has_custom_key ? 'Key is configured' : 'Bring your own Gemini key'}
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {/* 3. HELP & RESOURCES */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: textSecondary }]}>HELP & RESOURCES</Text>
           
@@ -205,7 +319,7 @@ export default function SettingsScreen() {
                     <Ionicons name="bulb-outline" size={20} color="#EAB308" />
                   )}
                 </View>
-                <View>
+                <View style={styles.itemTextContainer}>
                   <Text style={[styles.listItemTitle, { color: textPrimary }]}>Health & Tracking Tips</Text>
                   <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Best practices for your goals</Text>
                 </View>
@@ -229,7 +343,7 @@ export default function SettingsScreen() {
                 <View style={[styles.iconContainer, { backgroundColor: 'rgba(99, 102, 241, 0.15)' }]}>
                   <Ionicons name="compass-outline" size={20} color="#6366F1" />
                 </View>
-                <View>
+                <View style={styles.itemTextContainer}>
                   <Text style={[styles.listItemTitle, { color: textPrimary }]}>Reset Tutorials & Tips</Text>
                   <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Replay the tour and tooltip animations</Text>
                 </View>
@@ -239,6 +353,7 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* 4. SUPPORT & FEEDBACK */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: textSecondary }]}>SUPPORT & FEEDBACK</Text>
           
@@ -251,9 +366,9 @@ export default function SettingsScreen() {
                 <View style={[styles.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
                   <Ionicons name="chatbox-ellipses-outline" size={20} color="#F59E0B" />
                 </View>
-                <View>
-                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Report a Bug / Feedback</Text>
-                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Share your ideas or report an issue</Text>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Bug, Complaint or Feedback</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Report bugs, submit complaints, or share ideas</Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color={textSecondary} />
@@ -261,31 +376,56 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {aiSettings.byok_enabled && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: textSecondary }]}>AI FEATURES</Text>
-            
-            <View style={[styles.card, { backgroundColor: bgSurface, borderColor }]}>
-              <Pressable 
-                style={styles.listItem}
-                onPress={() => setByokVisible(true)}
-              >
-                <View style={styles.listItemLeft}>
-                  <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-                    <Ionicons name="key-outline" size={20} color="#10B981" />
-                  </View>
-                  <View>
-                    <Text style={[styles.listItemTitle, { color: textPrimary }]}>Custom API Key</Text>
-                    <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
-                      {aiSettings.has_custom_key ? 'Key is configured' : 'Bring your own Gemini key'}
-                    </Text>
-                  </View>
+        {/* 5. ACCOUNT */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: textSecondary }]}>ACCOUNT</Text>
+          
+          <View style={[styles.card, { backgroundColor: bgSurface, borderColor }]}>
+            <Pressable 
+              style={styles.listItem}
+              onPress={handleSignOutPrompt}
+              disabled={isDeletingAccount}
+            >
+              <View style={styles.listItemLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: isDark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(100, 116, 139, 0.12)' }]}>
+                  <Ionicons name="log-out-outline" size={20} color={textSecondary} />
                 </View>
-                <Ionicons name="chevron-forward" size={20} color={textSecondary} />
-              </Pressable>
-            </View>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Log Out</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Sign out of your session on this device</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: borderColor }]} />
+
+            <Pressable 
+              style={styles.listItem}
+              onPress={handleDeleteAccountPrompt}
+              disabled={isDeletingAccount}
+            >
+              <View style={styles.listItemLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
+                  {isDeletingAccount ? (
+                    <ActivityIndicator size="small" color="#EF4444" />
+                  ) : (
+                    <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                  )}
+                </View>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: '#EF4444' }]}>
+                    {isDeletingAccount ? 'Deleting Account...' : 'Delete Account'}
+                  </Text>
+                  <Text style={[styles.listItemSubtitle, { color: isDark ? '#F87171' : '#DC2626' }]}>
+                    Permanently erase account and all data
+                  </Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={isDark ? '#F87171' : '#DC2626'} />
+            </Pressable>
           </View>
-        )}
+        </View>
 
         <View style={styles.versionContainer}>
           <Text style={[styles.versionText, { color: textSecondary }]}>
@@ -341,10 +481,64 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   content: {
     padding: 16,
+  },
+  profileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginBottom: 24,
+    gap: 16,
+  },
+  profileAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#6366F1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  profileAvatarText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  profileDetails: {
+    flex: 1,
+    gap: 3,
+  },
+  profileName: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  profileEmail: {
+    fontSize: 13,
+  },
+  profileGoalBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    gap: 5,
+    marginTop: 4,
+  },
+  profileGoalText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6366F1',
   },
   section: {
     marginBottom: 24,
@@ -370,14 +564,18 @@ const styles = StyleSheet.create({
   listItemLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   iconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 16,
+    marginRight: 14,
+  },
+  itemTextContainer: {
+    flex: 1,
   },
   listItemTitle: {
     fontSize: 16,
@@ -393,7 +591,7 @@ const styles = StyleSheet.create({
   },
   versionContainer: {
     alignItems: 'center',
-    paddingVertical: 20,
+    paddingVertical: 16,
   },
   versionText: {
     fontSize: 12,

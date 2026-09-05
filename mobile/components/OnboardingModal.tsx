@@ -74,7 +74,8 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
         setGender((initialProfile.gender as any) || null);
         setHeight(initialProfile.height_cm?.toString() || '');
         setWeight(initialProfile.weight_kg?.toString() || '');
-        setGoal((initialProfile.goal as any) || null);
+        const rawGoal = (initialProfile.goal as any) || null;
+        setGoal(rawGoal === 'Gain weight' ? 'Gain Muscle' : rawGoal);
         setTargetWeight(initialProfile.target_weight_kg?.toString() || '');
         
         setTargetCalories(initialProfile.target_calories?.toString() || '');
@@ -120,7 +121,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
     else if (step === 'age-gender') setStep('height-weight');
     else if (step === 'height-weight') setStep('goal');
     else if (step === 'goal') {
-      if (goal === 'Lose weight' || goal === 'Gain weight') {
+      if (goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') {
         setStep('target-weight');
       } else {
         calculateTargets();
@@ -138,7 +139,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
     else if (step === 'goal') setStep('height-weight');
     else if (step === 'target-weight') setStep('goal');
     else if (step === 'review') {
-      if (goal === 'Lose weight' || goal === 'Gain weight') setStep('target-weight');
+      if (goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') setStep('target-weight');
       else setStep('goal');
     }
   };
@@ -359,7 +360,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       const target = parseFloat(targetWeight);
       if (!targetWeight || isNaN(target)) return false;
       if (goal === 'Lose weight' && target >= current) return false;
-      if (goal === 'Gain weight' && target <= current) return false;
+      if ((goal === 'Gain Muscle' || goal === 'Gain weight') && target <= current) return false;
       if (Math.abs(current - target) > 12) return false;
       return true;
     }
@@ -379,7 +380,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
   };
 
   const stepNumber = getStepNumber();
-  const totalSteps = goal === 'Lose weight' || goal === 'Gain weight' ? 6 : 5;
+  const totalSteps = goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight' ? 6 : 5;
   const progressPercent = (stepNumber / totalSteps) * 100;
 
   const bmrInfoText = () => {
@@ -387,15 +388,15 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
 
     let targetDiff = 0;
     if (goal === 'Lose weight') targetDiff = parseFloat(maintenanceCalories) - parseFloat(targetCalories);
-    else if (goal === 'Gain weight') targetDiff = parseFloat(targetCalories) - parseFloat(maintenanceCalories);
+    else if (goal === 'Gain Muscle' || goal === 'Gain weight') targetDiff = parseFloat(targetCalories) - parseFloat(maintenanceCalories);
     
     // approx 7700 kcal per kg of body fat. So weekly diff = targetDiff * 7
     // weekly weight change = (targetDiff * 7) / 7700 = targetDiff / 1100
     const weeklyChange = (targetDiff / 1100).toFixed(2);
-    const actionStr = goal === 'Lose weight' ? 'lose' : (goal === 'Gain weight' ? 'gain' : 'maintain');
+    const actionStr = goal === 'Lose weight' ? 'lose' : ((goal === 'Gain Muscle' || goal === 'Gain weight') ? 'gain' : 'maintain');
 
     let weeksToGoalText = '';
-    if ((goal === 'Lose weight' || goal === 'Gain weight') && parseFloat(weeklyChange) > 0 && targetWeight && weight) {
+    if ((goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') && parseFloat(weeklyChange) > 0 && targetWeight && weight) {
       const weightDiff = Math.abs(parseFloat(weight) - parseFloat(targetWeight));
       const weeksToGoal = Math.ceil(weightDiff / parseFloat(weeklyChange));
       weeksToGoalText = ` It will take approximately ${weeksToGoal} weeks to reach your target weight.`;
@@ -509,7 +510,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       <Text style={[styles.subtitle, { color: textSecondary }]}>We'll adjust your calories accordingly.</Text>
       
       <View style={{ marginTop: 24, gap: 12 }}>
-        {['Lose weight', 'Maintain weight', 'Gain weight', 'Just track my food'].map((g) => (
+        {['Lose weight', 'Maintain weight', 'Gain Muscle', 'Just track my food'].map((g) => (
           <Pressable
             key={g}
             style={[styles.choiceListBtn, { backgroundColor: buttonBg, borderColor }, goal === g && styles.choiceActive]}
@@ -549,7 +550,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
         {targetWeight !== '' && goal === 'Lose weight' && targetW >= currentW && (
           <Text style={styles.errorText}>Target weight must be less than current weight ({weight} kg).</Text>
         )}
-        {targetWeight !== '' && goal === 'Gain weight' && targetW <= currentW && (
+        {targetWeight !== '' && (goal === 'Gain Muscle' || goal === 'Gain weight') && targetW <= currentW && (
           <Text style={styles.errorText}>Target weight must be greater than current weight ({weight} kg).</Text>
         )}
         {isDiffTooLarge && (

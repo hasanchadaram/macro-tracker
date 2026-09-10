@@ -8,6 +8,7 @@ export interface Profile {
   id: string;
   full_name?: string;
   display_name: string | null;
+  avatar_id?: string | null;
   height_cm: number | null;
   gender: string | null;
   date_of_birth: string | null;
@@ -26,6 +27,10 @@ export interface Profile {
   target_steps: number | null;
   activity_credit_factor?: number | null;
   stride_length_cm?: number | null;
+  last_check_in_date?: string | null;
+  trend_weight_kg?: number | null;
+  protein_multiplier?: number | null;
+  calibrated_weight_kg?: number | null;
   created_at?: string;
 }
 
@@ -170,4 +175,75 @@ export interface ExerciseSemanticResponse {
   candidates?: ExerciseSemanticCandidate[];
   duration_minutes?: number | null;
   detected_intensity?: 'light' | 'moderate' | 'vigorous' | null;
+}
+
+/** Adaptive nutrition coaching action type */
+export type CheckInActionType =
+  | 'hold'
+  | 'decrease'
+  | 'proactive_trim'
+  | 'increase'
+  | 'floor_reached'
+  | 'adherence_warning';
+
+/** Status of the weekly check in decision */
+export type CheckInStatus = 'accepted' | 'kept_current' | 'skipped';
+
+/** Result from evaluateWeeklyCheckIn */
+export interface CheckInRecommendation {
+  actionType: CheckInActionType;
+  title: string;
+  verdict: string;
+  rationale: string;
+  detailedGuidance?: string;
+  isFirstCheckIn: boolean;
+  daysLogged: number; // Out of 7
+  adherenceMet: boolean;
+  currentScaleWeight: number;
+  currentTrendWeight: number;
+  previousTrendWeight: number;
+  weightDeltaKg: number;
+  ratePercent: number; // e.g. -0.52 for -0.52% BW change
+  // Nutrition comparisons
+  oldCalories: number;
+  newCalories: number;
+  calorieDelta: number;
+  oldProtein: number;
+  newProtein: number;
+  oldCarbs: number;
+  newCarbs: number;
+  oldFat: number;
+  newFat: number;
+  proteinMultiplier: number;
+  calibratedWeightKg: number;
+  targetSteps: number;
+  // Safety floor
+  safetyFloor: number;
+  isAtFloor: number | boolean;
+}
+
+/** Check-in record stored in Supabase check_ins table */
+export interface CheckInRecord {
+  id: string;
+  user_id: string;
+  check_in_date: string;
+  scale_weight: number;
+  trend_weight: number;
+  previous_trend_weight?: number | null;
+  weight_delta_kg?: number | null;
+  rate_percent?: number | null;
+  days_logged: number;
+  average_calories?: number | null;
+  status: CheckInStatus;
+  action_type: CheckInActionType;
+  old_calories?: number | null;
+  new_calories?: number | null;
+  old_protein?: number | null;
+  new_protein?: number | null;
+  old_carbs?: number | null;
+  new_carbs?: number | null;
+  old_fat?: number | null;
+  new_fat?: number | null;
+  coach_message: string;
+  created_at: string;
 }

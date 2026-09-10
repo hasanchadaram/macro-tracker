@@ -87,6 +87,108 @@ const geminiBreaker = new CircuitBreaker({
   redis,
 });
 
+interface ModelWeight {
+  model: string;
+  percentage: number;
+}
+
+/**
+ * Parses the AI_MODELS_PERCENTAGE_CONFIG environment variable.
+ * Supports both JSON array: `[{"model":"m1","percentage":25},{"model":"m2","percentage":75}]`
+ * and shorthand comma-separated: `"25:m1,75:m2"`.
+ */
+function parseModelConfig(configRaw: string | undefined): ModelWeight[] {
+  const fallback: ModelWeight[] = [
+    { model: 'gemini-3.5-flash-lite', percentage: 25 },
+    { model: 'gemini-3.6-flash', percentage: 25 },
+    { model: 'gemini-3.7-flash', percentage: 50 },
+  ];
+
+  if (!configRaw || !configRaw.trim()) {
+    return fallback;
+  }
+
+  const trimmed = configRaw.trim();
+
+  // 1. Try JSON parse
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const valid = parsed
+          .filter((item) => item && typeof item.model === 'string' && typeof item.percentage === 'number' && item.percentage > 0)
+          .map((item) => ({ model: item.model.trim(), percentage: item.percentage }));
+        if (valid.length > 0) return valid;
+      }
+    } catch (e) {
+      console.warn("scan-food: Failed to parse AI_MODELS_PERCENTAGE_CONFIG as JSON:", e);
+    }
+  }
+
+  // 2. Try shorthand format: "25:model1, 25:model2, 50:model3"
+  if (trimmed.includes(':')) {
+    try {
+      const parts = trimmed.split(',').map((p: string) => p.trim()).filter(Boolean);
+      const list: ModelWeight[] = [];
+      for (const part of parts) {
+        const [pctStr, modelStr] = part.split(':').map((s: string) => s.trim());
+        const pct = parseFloat(pctStr);
+        if (!isNaN(pct) && pct > 0 && modelStr) {
+          list.push({ model: modelStr, percentage: pct });
+        }
+      }
+      if (list.length > 0) return list;
+    } catch (e) {
+      console.warn("scan-food: Failed to parse AI_MODELS_PERCENTAGE_CONFIG as shorthand:", e);
+    }
+  }
+
+  return fallback;
+}
+
+/**
+ * Deterministically hashes a user ID to an integer 0..99
+ */
+function hashUserId(userId: string): number {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = ((hash << 5) - hash + userId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % 100;
+}
+
+/**
+ * Selects a model based on percentage weights for a user
+ */
+function assignModelFromPercentages(userId: string, models: ModelWeight[]): string {
+  if (models.length === 0) return 'gemini-3.5-flash-lite';
+  if (models.length === 1) return models[0].model;
+
+  const totalPercentage = models.reduce((acc, m) => acc + m.percentage, 0);
+  const bucket = (hashUserId(userId) / 100) * totalPercentage;
+
+  let cumulative = 0;
+  for (const m of models) {
+    cumulative += m.percentage;
+    if (bucket < cumulative) {
+      return m.model;
+    }
+  }
+
+  return models[models.length - 1].model;
+}
+
+/**
+ * Resolves the appropriate thinkingConfig for a given Gemini model.
+ * Models like gemini-3.7-flash and gemini-3.8-flash do not support thinkingLevel: "MINIMAL",
+ * so we use "LOW" for them. Other models (like gemini-3.5-flash-lite, gemini-3.6-flash) use "MINIMAL".
+ */
+function getThinkingConfig(model: string): { thinkingLevel: string } {
+  if (model.includes('3.7') || model.includes('3.8')) {
+    return { thinkingLevel: "LOW" };
+  }
+  return { thinkingLevel: "MINIMAL" };
+}
 
 const geminiPrompt = `
 Analyze the provided meal from the user's text and/or image.
@@ -355,7 +457,6 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     
-    let aiModel = 'gemini-3.5-flash-lite'; // Safe fallback
     let customApiKey: string | null = null;
     const { data: modelData } = await supabaseAdmin
       .from('user_ai_settings')
@@ -363,12 +464,64 @@ Deno.serve(async (req) => {
       .eq('user_id', user.id)
       .maybeSingle();
       
-    if (modelData?.ai_model) {
-      aiModel = modelData.ai_model;
-    }
     if (modelData?.custom_api_key && modelData.custom_api_key.trim()) {
       customApiKey = modelData.custom_api_key.trim();
     }
+
+    const byokDefaultModel = Deno.env.get('BYOK_DEFAULT_AI_MODEL') || 'gemini-3.6-flash';
+    const activeModelWeights = parseModelConfig(Deno.env.get('AI_MODELS_PERCENTAGE_CONFIG'));
+
+    const currentDbModel = modelData?.ai_model?.trim() || null;
+
+    // Check if the user has a manual override in the database.
+    // A manual override is any non-empty ai_model that does NOT start with 'CONFIG_'.
+    const isManualOverride = currentDbModel !== null && !currentDbModel.startsWith('CONFIG_');
+
+    let aiModel: string;
+
+    if (isManualOverride) {
+      // ── MANUAL OVERRIDE (Priority: Database) ─────────────────────────
+      // The developer/admin manually assigned or edited this model in the DB.
+      aiModel = currentDbModel;
+      console.log(`scan-food: user=${user.id} using MANUAL_OVERRIDE aiModel=${aiModel}`);
+    } else {
+      // ── CONFIG DRIVEN (Priority: Configuration) ──────────────────────
+      // The model is driven by server config (BYOK or percentage split).
+      let resolvedModel: string;
+      if (customApiKey) {
+        // BYOK user -> take model from BYOK configuration
+        resolvedModel = byokDefaultModel;
+      } else {
+        // Normal user -> take model from percentage split configuration
+        resolvedModel = assignModelFromPercentages(user.id, activeModelWeights);
+      }
+
+      aiModel = resolvedModel;
+      const expectedDbValue = `CONFIG_${resolvedModel}`;
+
+      // If DB doesn't have this value yet (e.g. was null, or config model changed/deprecated), update it
+      if (currentDbModel !== expectedDbValue) {
+        supabaseAdmin
+          .from('user_ai_settings')
+          .upsert(
+            {
+              user_id: user.id,
+              ai_model: expectedDbValue,
+              byok_enabled: !!customApiKey,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'user_id' }
+          )
+          .then(({ error: upsertErr }) => {
+            if (upsertErr) {
+              console.warn(`scan-food: Failed to update ai_model for user ${user.id}:`, upsertErr);
+            } else {
+              console.log(`scan-food: Synced ai_model='${expectedDbValue}' for user ${user.id}`);
+            }
+          });
+      }
+    }
+
     tDb = Math.round(performance.now() - tDbStart);
 
     // ── 7. AI Specific Rate Limiting (Parallel 3/min & 6/day for Free Tier)
@@ -467,9 +620,7 @@ Deno.serve(async (req) => {
           generationConfig: {
             responseMimeType: "application/json",
             responseSchema: macroSchema,
-            thinkingConfig: {
-              thinkingLevel: "MINIMAL",
-            },
+            thinkingConfig: getThinkingConfig(aiModel),
           }
         }),
       });

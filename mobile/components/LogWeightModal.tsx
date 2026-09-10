@@ -16,6 +16,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 interface LogWeightModalProps {
   visible: boolean;
   initialWeight?: number | null;
+  isEditing?: boolean;
   onClose: () => void;
   onLogWeight: (weight: number) => Promise<void>;
 }
@@ -23,6 +24,7 @@ interface LogWeightModalProps {
 export function LogWeightModal({
   visible,
   initialWeight,
+  isEditing,
   onClose,
   onLogWeight,
 }: LogWeightModalProps) {
@@ -31,6 +33,8 @@ export function LogWeightModal({
 
   const [weightText, setWeightText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const isUpdating = isEditing || (initialWeight !== null && initialWeight !== undefined);
 
   useEffect(() => {
     if (visible) {
@@ -79,7 +83,9 @@ export function LogWeightModal({
       >
         <View style={[styles.modalContent, { backgroundColor: cardBg }]}>
           <View style={styles.header}>
-            <Text style={[styles.title, { color: textPrimary }]}>Log Today's Weight</Text>
+            <Text style={[styles.title, { color: textPrimary }]}>
+              {isUpdating ? "Update Today's Weight" : "Log Today's Weight"}
+            </Text>
             <Pressable onPress={handleClose} style={styles.closeBtn}>
               <Ionicons name="close" size={24} color={textPrimary} />
             </Pressable>
@@ -99,7 +105,9 @@ export function LogWeightModal({
             <View style={styles.tipContainer}>
               <Ionicons name="information-circle-outline" size={16} color={textSecondary} />
               <Text style={[styles.tipText, { color: textSecondary }]}>
-                Tip: Track early morning before drinking water for best accuracy.
+                {isUpdating
+                  ? "Entering a new value will update today's log and recalculate your progress."
+                  : "Tip: Track early morning before drinking water for best accuracy."}
               </Text>
             </View>
           </View>
@@ -116,7 +124,9 @@ export function LogWeightModal({
             {isProcessing ? (
               <ActivityIndicator color="#FFF" />
             ) : (
-              <Text style={styles.submitBtnText}>Log Weight</Text>
+              <Text style={styles.submitBtnText}>
+                {isUpdating ? "Update Weight" : "Log Weight"}
+              </Text>
             )}
           </Pressable>
         </View>

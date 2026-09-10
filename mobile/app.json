@@ -2,7 +2,7 @@
   "expo": {
     "name": "Day Fuel",
     "slug": "macro-tracker",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "dayfuel",
@@ -21,7 +21,7 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.nudgeforward.dayfuel",
-      "versionCode": 6,
+      "versionCode": 8,
       "permissions": [
         "android.permission.health.READ_STEPS",
         "android.permission.health.READ_ACTIVE_CALORIES_BURNED"

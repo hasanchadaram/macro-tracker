@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import type { ProteinBaselineInfo } from '@/lib/nutrition';
+import { formatWeight, type ProteinBaselineInfo } from '@/lib/nutrition';
 
 interface ProteinSliderProps {
   multiplier: number; // 1.6 to 2.2
@@ -104,7 +104,14 @@ export function ProteinSlider({
   // Helper description of the weight being used
   const renderBaselineContext = () => {
     if (!baselineInfo) {
-      return `Calculated against: ${Math.round(weightBaseline * 10) / 10} kg`;
+      return (
+        <Text style={[styles.baselineSubtext, { color: textSecondary }]}>
+          Calculated against:{' '}
+          <Text style={{ fontWeight: '700', color: primaryColor }}>
+            {formatWeight(weightBaseline)} kg
+          </Text>
+        </Text>
+      );
     }
 
     if (baselineInfo.alpha > 0 && baselineInfo.alpha < 1) {
@@ -112,7 +119,7 @@ export function ProteinSlider({
         <Text style={[styles.baselineSubtext, { color: textSecondary }]}>
           Calculated against blended baseline of{' '}
           <Text style={{ fontWeight: '700', color: primaryColor }}>
-            {baselineInfo.displayBaseline} kg
+            {formatWeight(baselineInfo.displayBaseline)} kg
           </Text>{' '}
           (smoothly transitioned toward target weight)
         </Text>
@@ -124,7 +131,7 @@ export function ProteinSlider({
         <Text style={[styles.baselineSubtext, { color: textSecondary }]}>
           Calculated against target weight of{' '}
           <Text style={{ fontWeight: '700', color: primaryColor }}>
-            {baselineInfo.displayBaseline} kg
+            {formatWeight(baselineInfo.displayBaseline)} kg
           </Text>
         </Text>
       );
@@ -132,9 +139,9 @@ export function ProteinSlider({
 
     return (
       <Text style={[styles.baselineSubtext, { color: textSecondary }]}>
-        Calculated against current weight of{' '}
+        Calculated against weight of{' '}
         <Text style={{ fontWeight: '700', color: primaryColor }}>
-          {baselineInfo.displayBaseline} kg
+          {formatWeight(baselineInfo.displayBaseline)} kg
         </Text>
       </Text>
     );

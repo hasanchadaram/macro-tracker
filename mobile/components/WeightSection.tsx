@@ -34,14 +34,20 @@ export function WeightSection({ latestLog, onAddPress }: WeightSectionProps) {
           <Text style={[styles.title, { color: textPrimary }]}>WEIGHT</Text>
         </View>
         <View style={[styles.addButton, { backgroundColor: activeColor + '18' }]}>
-          <Ionicons name="add" size={20} color={activeColor} />
+          <Ionicons name={latestLog ? "pencil" : "add"} size={latestLog ? 16 : 20} color={activeColor} />
         </View>
       </Pressable>
 
       {/* Customized Content specific to Weight widget */}
       <View style={styles.content}>
         {latestLog ? (
-          <View style={styles.logContainer}>
+          <Pressable
+            style={({ pressed }) => [styles.logContainer, pressed && { opacity: 0.8 }]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onAddPress();
+            }}
+          >
             <View style={styles.logLeft}>
               <Text style={[styles.weightText, { color: textPrimary }]}>
                 {latestLog.weight} <Text style={[styles.unitText, { color: textSecondary }]}>kg</Text>
@@ -50,10 +56,16 @@ export function WeightSection({ latestLog, onAddPress }: WeightSectionProps) {
                 Logged today at {new Date(latestLog.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </Text>
             </View>
-            <View style={styles.successBadge}>
-              <Ionicons name="checkmark-circle" size={28} color="#10B981" />
+            <View style={styles.logRight}>
+              <View style={[styles.editPill, { backgroundColor: activeColor + '18' }]}>
+                <Ionicons name="pencil" size={13} color={activeColor} style={{ marginRight: 4 }} />
+                <Text style={[styles.editPillText, { color: activeColor }]}>Update</Text>
+              </View>
+              <View style={styles.successBadge}>
+                <Ionicons name="checkmark-circle" size={24} color="#10B981" />
+              </View>
             </View>
-          </View>
+          </Pressable>
         ) : (
           <Pressable style={styles.emptyContainer} onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -120,6 +132,22 @@ const styles = StyleSheet.create({
   },
   logLeft: {
     gap: 4,
+  },
+  logRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  editPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  editPillText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   weightText: {
     fontSize: 32,

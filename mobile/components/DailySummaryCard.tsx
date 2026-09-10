@@ -15,6 +15,7 @@ import Animated, {
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Ionicons } from '@expo/vector-icons';
 import { useAlert } from '@/components/ui/CustomAlert';
+import { AttentionBeacon } from '@/components/ui/AttentionBeacon';
 import * as Haptics from 'expo-haptics';
 
 import { TextInput } from 'react-native';
@@ -22,25 +23,29 @@ import { TextInput } from 'react-native';
 const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 
 function CountingNumber({ value, isLoading, style, prefix = '', suffix = '', date }: { value: number; isLoading?: boolean; style: any; prefix?: string; suffix?: string; date?: string }) {
-  const animatedValue = useSharedValue(0);
+  const animatedValue = useSharedValue(value || 0);
   const prevDateRef = React.useRef(date);
   const isFirstLoadRef = React.useRef(true);
   const prevValueRef = React.useRef(value);
+  const prevLoadingRef = React.useRef(isLoading);
 
   useEffect(() => {
+    const wasLoading = prevLoadingRef.current;
+    prevLoadingRef.current = isLoading;
+
     if (isLoading) {
-      animatedValue.value = 0;
       return;
     }
 
     const isDateChange = date !== undefined && date !== prevDateRef.current;
     prevDateRef.current = date;
+    const justFinishedLoading = wasLoading && !isLoading;
 
-    if (isFirstLoadRef.current || isDateChange) {
+    if (isFirstLoadRef.current || isDateChange || justFinishedLoading) {
       isFirstLoadRef.current = false;
       prevValueRef.current = value;
       animatedValue.value = 0;
-      animatedValue.value = withDelay(200, withTiming(value, { duration: 800, easing: Easing.out(Easing.cubic) }));
+      animatedValue.value = withDelay(justFinishedLoading ? 50 : 200, withTiming(value, { duration: 800, easing: Easing.out(Easing.cubic) }));
     } else {
       // In-place update: roll directly from CURRENT value to NEW value!
       if (prevValueRef.current !== value) {
@@ -259,6 +264,7 @@ export function DailySummaryCard({
 
   const isFirstLoadRef = React.useRef(true);
   const prevDateRef = React.useRef(date);
+  const prevLoadingRef = React.useRef(isLoading);
   const prevMetricsRef = React.useRef({
     calories: -1,
     protein: -1,
@@ -271,23 +277,21 @@ export function DailySummaryCard({
   });
 
   useEffect(() => {
+    const wasLoading = prevLoadingRef.current;
+    prevLoadingRef.current = isLoading;
+
     if (isLoading) {
-      ringProgress.value = 0;
-      proteinBarWidth.value = 0;
-      carbsBarWidth.value = 0;
-      fatBarWidth.value = 0;
-      proteinOpacity.value = 0;
-      carbsOpacity.value = 0;
-      fatOpacity.value = 0;
       return;
     }
 
     const isDateChange = date !== undefined && date !== prevDateRef.current;
     prevDateRef.current = date;
+    const justFinishedLoading = wasLoading && !isLoading;
 
     const prev = prevMetricsRef.current;
     const hasChanged =
       isDateChange ||
+      justFinishedLoading ||
       prev.calories !== calories ||
       prev.protein !== protein ||
       prev.carbs !== carbs ||
@@ -301,7 +305,7 @@ export function DailySummaryCard({
       return;
     }
 
-    const isEntrance = isFirstLoadRef.current || isDateChange;
+    const isEntrance = isFirstLoadRef.current || isDateChange || justFinishedLoading;
     isFirstLoadRef.current = false;
     prevMetricsRef.current = {
       calories,
@@ -401,38 +405,7 @@ export function DailySummaryCard({
   const carbsCardStyle = useAnimatedStyle(() => ({ opacity: carbsOpacity.value }));
   const fatCardStyle = useAnimatedStyle(() => ({ opacity: fatOpacity.value }));
 
-  // Gentle breathing animation for warning/info indicators
-  const breathingScale = useSharedValue(1);
-  const breathingOpacity = useSharedValue(0.85);
 
-  useEffect(() => {
-    if (hasAlert) {
-      breathingScale.value = withRepeat(
-        withSequence(
-          withTiming(1.15, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
-          withTiming(1.0, { duration: 1500, easing: Easing.inOut(Easing.ease) })
-        ),
-        -1,
-        true
-      );
-      breathingOpacity.value = withRepeat(
-        withSequence(
-          withTiming(1.0, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
-          withTiming(0.75, { duration: 1500, easing: Easing.inOut(Easing.ease) })
-        ),
-        -1,
-        true
-      );
-    } else {
-      breathingScale.value = 1;
-      breathingOpacity.value = 1;
-    }
-  }, [hasAlert]);
-
-  const breathingStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: breathingScale.value }],
-    opacity: breathingOpacity.value,
-  }));
 
   const handleUnderEatingPress = () => {
     if (!underEatingThreshold) return;
@@ -494,27 +467,27 @@ export function DailySummaryCard({
         {/* Undereating Icon (Red) */}
         {isUnderEating && (
           <Pressable style={styles.infoButton} onPress={handleUnderEatingPress}>
-            <Animated.View style={breathingStyle}>
+            <AttentionBeacon color="#EF4444" size={26} showHalo={false}>
               <Ionicons name="information-circle" size={24} color="#EF4444" />
-            </Animated.View>
+            </AttentionBeacon>
           </Pressable>
         )}
 
         {/* Overeating Caution Icon (Purple - 500-600 surplus) */}
         {isOverEatingCaution && (
           <Pressable style={styles.infoButton} onPress={handleOverEatingCautionPress}>
-            <Animated.View style={breathingStyle}>
+            <AttentionBeacon color="#A855F7" size={26} showHalo={false}>
               <Ionicons name="information-circle" size={24} color="#A855F7" />
-            </Animated.View>
+            </AttentionBeacon>
           </Pressable>
         )}
 
         {/* Overeating High Alert Icon (Intense Purple - >600 surplus) */}
         {isOverEatingAlert && (
           <Pressable style={styles.infoButton} onPress={handleOverEatingAlertPress}>
-            <Animated.View style={breathingStyle}>
+            <AttentionBeacon color="#A855F7" size={26} showHalo={false}>
               <Ionicons name="warning" size={24} color="#A855F7" />
-            </Animated.View>
+            </AttentionBeacon>
           </Pressable>
         )}
         

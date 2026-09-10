@@ -21,6 +21,7 @@ import {
   calculateNutritionTargets,
   getDefaultProteinMultiplier,
   getProteinBaselineInfo,
+  formatWeight,
   type ProteinBaselineInfo,
   type GoalType,
 } from '@/lib/nutrition';
@@ -72,10 +73,16 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       if (initialProfile) {
         setAge(initialProfile.age?.toString() || '');
         setGender((initialProfile.gender as any) || null);
-        setHeight(initialProfile.height_cm?.toString() || '');
-        setWeight(initialProfile.weight_kg?.toString() || '');
+        // Determine the weight baseline used for protein target calibration:
+        // When in 'review' step, prioritize calibrated_weight_kg (the calibrated baseline weight when targets were set)
+        // rather than volatile daily scale weight logs
+        const effectiveWeight = (initialStep === 'review' && initialProfile.calibrated_weight_kg)
+          ? initialProfile.calibrated_weight_kg
+          : (initialProfile.weight_kg || 70);
+
+        setWeight(effectiveWeight.toString());
         const rawGoal = (initialProfile.goal as any) || null;
-        setGoal(rawGoal === 'Gain weight' ? 'Gain Muscle' : rawGoal);
+        setGoal(rawGoal === 'Gain weight' || rawGoal === 'Gain Muscle' ? 'Gain muscle' : rawGoal);
         setTargetWeight(initialProfile.target_weight_kg?.toString() || '');
         
         setTargetCalories(initialProfile.target_calories?.toString() || '');
@@ -86,14 +93,15 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
         setMaintenanceCalories(initialProfile.maintenance_calories?.toString() || '');
         setUnderEatingThreshold(initialProfile.under_eating_threshold?.toString() || '');
 
-        const w = initialProfile.weight_kg || 70;
         const tw = initialProfile.target_weight_kg;
         const g = (initialProfile.goal as any) || null;
-        const bInfo = getProteinBaselineInfo(w, tw, g);
+        const bInfo = getProteinBaselineInfo(effectiveWeight, tw, g);
         setBaselineInfo(bInfo);
         setWeightBaseline(bInfo.baseline);
 
-        if (initialProfile.target_protein && bInfo.baseline > 0) {
+        if (initialProfile.protein_multiplier) {
+          setProteinMultiplier(initialProfile.protein_multiplier);
+        } else if (initialProfile.target_protein && bInfo.baseline > 0) {
           const derivedMult = initialProfile.target_protein / bInfo.baseline;
           setProteinMultiplier(Math.min(2.2, Math.max(1.6, Math.round(derivedMult * 10) / 10)));
         } else {
@@ -121,7 +129,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
     else if (step === 'age-gender') setStep('height-weight');
     else if (step === 'height-weight') setStep('goal');
     else if (step === 'goal') {
-      if (goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') {
+      if (goal === 'Lose weight' || goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') {
         setStep('target-weight');
       } else {
         calculateTargets();
@@ -139,7 +147,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
     else if (step === 'goal') setStep('height-weight');
     else if (step === 'target-weight') setStep('goal');
     else if (step === 'review') {
-      if (goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') setStep('target-weight');
+      if (goal === 'Lose weight' || goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') setStep('target-weight');
       else setStep('goal');
     }
   };
@@ -176,20 +184,24 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
     const newCals = parseFloat(text);
 
     if (!isNaN(newCals) && newCals > 0) {
-      // Deterministic absolute calculation (55% Carbs / 45% Fat with 30% total calorie fat cap)
+      // Priority 1: Protein set first based on calibrated weight baseline & multiplier (4 cal/g)
       const baseline = weightBaseline > 0 ? weightBaseline : (parseFloat(weight) || 70);
       const mult = proteinMultiplier || getDefaultProteinMultiplier(goal);
       const pTarget = Math.round(mult * baseline);
       const pCals = pTarget * 4;
 
+      // Priority 2: Healthy fat range (20% to 30% of total calories, targeting 45% of non-protein calories at 8 cal/g)
       const remainingCals = Math.max(0, newCals - pCals);
       const rawFatCals = remainingCals * 0.45;
       const maxFatCals = newCals * 0.30;
-      const fatCals = Math.min(rawFatCals, maxFatCals);
-      const carbCals = Math.max(0, remainingCals - fatCals);
-
-      const cTarget = Math.round(carbCals / 4);
+      const minFatCals = newCals * 0.20;
+      const fatCals = Math.max(minFatCals, Math.min(rawFatCals, maxFatCals));
       const fTarget = Math.round(fatCals / 8);
+      const actualFatCals = fTarget * 8;
+
+      // Priority 3: Carbs receives the remaining calories (4 cal/g)
+      const carbCals = Math.max(0, newCals - pCals - actualFatCals);
+      const cTarget = Math.round(carbCals / 4);
 
       setTargetProtein(pTarget.toString());
       setTargetCarbs(cTarget.toString());
@@ -277,6 +289,8 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       target_protein: parseFloat(targetProtein) || 150,
       target_carbs: parseFloat(targetCarbs) || 200,
       target_fat: parseFloat(targetFat) || 65,
+      protein_multiplier: proteinMultiplier,
+      calibrated_weight_kg: weightBaseline > 0 ? weightBaseline : (parseFloat(weight) || null),
     });
     setIsSaving(false);
   };
@@ -360,7 +374,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       const target = parseFloat(targetWeight);
       if (!targetWeight || isNaN(target)) return false;
       if (goal === 'Lose weight' && target >= current) return false;
-      if ((goal === 'Gain Muscle' || goal === 'Gain weight') && target <= current) return false;
+      if ((goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') && target <= current) return false;
       if (Math.abs(current - target) > 12) return false;
       return true;
     }
@@ -380,7 +394,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
   };
 
   const stepNumber = getStepNumber();
-  const totalSteps = goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight' ? 6 : 5;
+  const totalSteps = goal === 'Lose weight' || goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight' ? 6 : 5;
   const progressPercent = (stepNumber / totalSteps) * 100;
 
   const bmrInfoText = () => {
@@ -388,15 +402,15 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
 
     let targetDiff = 0;
     if (goal === 'Lose weight') targetDiff = parseFloat(maintenanceCalories) - parseFloat(targetCalories);
-    else if (goal === 'Gain Muscle' || goal === 'Gain weight') targetDiff = parseFloat(targetCalories) - parseFloat(maintenanceCalories);
+    else if (goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') targetDiff = parseFloat(targetCalories) - parseFloat(maintenanceCalories);
     
     // approx 7700 kcal per kg of body fat. So weekly diff = targetDiff * 7
     // weekly weight change = (targetDiff * 7) / 7700 = targetDiff / 1100
     const weeklyChange = (targetDiff / 1100).toFixed(2);
-    const actionStr = goal === 'Lose weight' ? 'lose' : ((goal === 'Gain Muscle' || goal === 'Gain weight') ? 'gain' : 'maintain');
+    const actionStr = goal === 'Lose weight' ? 'lose' : ((goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') ? 'gain' : 'maintain');
 
     let weeksToGoalText = '';
-    if ((goal === 'Lose weight' || goal === 'Gain Muscle' || goal === 'Gain weight') && parseFloat(weeklyChange) > 0 && targetWeight && weight) {
+    if ((goal === 'Lose weight' || goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') && parseFloat(weeklyChange) > 0 && targetWeight && weight) {
       const weightDiff = Math.abs(parseFloat(weight) - parseFloat(targetWeight));
       const weeksToGoal = Math.ceil(weightDiff / parseFloat(weeklyChange));
       weeksToGoalText = ` It will take approximately ${weeksToGoal} weeks to reach your target weight.`;
@@ -510,7 +524,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
       <Text style={[styles.subtitle, { color: textSecondary }]}>We'll adjust your calories accordingly.</Text>
       
       <View style={{ marginTop: 24, gap: 12 }}>
-        {['Lose weight', 'Maintain weight', 'Gain Muscle', 'Just track my food'].map((g) => (
+        {['Lose weight', 'Maintain weight', 'Gain muscle', 'Just track my food'].map((g) => (
           <Pressable
             key={g}
             style={[styles.choiceListBtn, { backgroundColor: buttonBg, borderColor }, goal === g && styles.choiceActive]}
@@ -550,14 +564,14 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
         {targetWeight !== '' && goal === 'Lose weight' && targetW >= currentW && (
           <Text style={styles.errorText}>Target weight must be less than current weight ({weight} kg).</Text>
         )}
-        {targetWeight !== '' && (goal === 'Gain Muscle' || goal === 'Gain weight') && targetW <= currentW && (
+        {targetWeight !== '' && (goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') && targetW <= currentW && (
           <Text style={styles.errorText}>Target weight must be greater than current weight ({weight} kg).</Text>
         )}
         {isDiffTooLarge && (
           <View style={[styles.diffWarningBox, { backgroundColor: isDark ? 'rgba(245, 158, 11, 0.15)' : '#FEF3C7', borderColor: '#F59E0B' }]}>
             <Ionicons name="information-circle" size={20} color="#D97706" style={{ marginTop: 2 }} />
             <Text style={[styles.diffWarningText, { color: isDark ? '#FDE68A' : '#92400E' }]}>
-              Target weight difference cannot exceed 12 kg (currently {diff.toFixed(1)} kg). Take it step-by-step—go little by little! You can set a new target once you reach this milestone.
+              Target weight difference cannot exceed 12 kg (currently {formatWeight(diff)} kg). Take it step-by-step—go little by little! You can set a new target once you reach this milestone.
             </Text>
           </View>
         )}
@@ -570,7 +584,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
 
   const renderReview = () => (
     <View style={styles.stepContainer}>
-      <Text style={[styles.title, { color: textPrimary }]}>Your Targets</Text>
+      <Text style={[styles.title, { color: textPrimary }]}>Daily Targets</Text>
       <Text style={[styles.subtitle, { color: textSecondary }]}>
         Here are your calculated daily targets. You can adjust your protein via the bar below or tap on any number to edit it.
       </Text>
@@ -663,7 +677,7 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
                 </Pressable>
               )}
               <Text style={[styles.title, { color: textPrimary }]}>
-                {step === 'review' ? 'Your Goals' : 'Nutrition Goals'}
+                Nutrition Goals
               </Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>

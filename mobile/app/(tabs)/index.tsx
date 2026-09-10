@@ -18,9 +18,10 @@ import * as Crypto from 'expo-crypto';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/lib/supabase';
-import type { FoodItem, MealEstimate, MealTotals, MealEntry, RecentFood, Profile, ExerciseEntry, WeightLog } from '@/lib/types';
+import type { FoodItem, MealEstimate, MealTotals, MealEntry, RecentFood, Profile, ExerciseEntry, WeightLog, CheckInRecommendation } from '@/lib/types';
 import { ExerciseSource, CalculationMethod } from '@/lib/constants';
 import { getLocalDateString, getLocalDayBoundsIso } from '@/lib/dateUtils';
+import { evaluateWeeklyCheckIn } from '@/lib/nutrition';
 
 import { DailySummaryCard } from '@/components/DailySummaryCard';
 import { MealSection } from '@/components/MealSection';
@@ -35,9 +36,13 @@ import { ExerciseSection } from '@/components/ExerciseSection';
 import { WeightSection } from '@/components/WeightSection';
 import { LogWeightModal } from '@/components/LogWeightModal';
 import { CalendarModal } from '@/components/CalendarModal';
+import { CheckInBanner } from '@/components/CheckInBanner';
+import { WeeklyCheckInModal } from '@/components/WeeklyCheckInModal';
 import { useHealthConnect } from '@/hooks/useHealthConnect';
 import { useAlert } from '@/components/ui/CustomAlert';
 import { SpotlightWalkthrough } from '@/components/SpotlightWalkthrough';
+import { RepeatMealSelectorModal, type RepeatMealCandidate } from '@/components/RepeatMealSelectorModal';
+import UserAvatar from '@/components/UserAvatar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -88,11 +93,11 @@ function resolveUserName(
   fallbackEmail?: string,
   cachedName?: string | null
 ): string {
-  const dbFullName = profileData?.full_name?.trim();
-  if (dbFullName) return dbFullName;
-
   const dbDisplayName = profileData?.display_name?.trim();
   if (dbDisplayName) return dbDisplayName;
+
+  const dbFullName = profileData?.full_name?.trim();
+  if (dbFullName) return dbFullName;
 
   const metaFullName = userMetadata?.full_name?.trim();
   if (metaFullName) return metaFullName;
@@ -126,6 +131,7 @@ export default function HomeScreen() {
   const [userName, setUserName] = useState<string>('');
   const [userEmail, setUserEmail] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
+  const [googleAvatarUrl, setGoogleAvatarUrl] = useState<string | null>(null);
 
   const [dailySummary, setDailySummary] = useState({ calories: 0, protein: 0, carbs: 0, fat: 0 });
   const [todaysEntries, setTodaysEntries] = useState<MealEntry[]>([]);
@@ -156,6 +162,18 @@ export default function HomeScreen() {
   const [isSaving, setIsSaving] = useState(false);
   const [editingEntry, setEditingEntry] = useState<MealEntry | null>(null);
   const [editingExercise, setEditingExercise] = useState<ExerciseEntry | null>(null);
+
+  // Adaptive Check-In State
+  const [checkInRecommendation, setCheckInRecommendation] = useState<CheckInRecommendation | null>(null);
+  const [isCheckInModalVisible, setIsCheckInModalVisible] = useState(false);
+  const [isCheckInEligible, setIsCheckInEligible] = useState(false);
+  const [daysSinceLastCheckIn, setDaysSinceLastCheckIn] = useState(0);
+  const [isCheckInBannerDismissed, setIsCheckInBannerDismissed] = useState(false);
+  const [isSavingCheckIn, setIsSavingCheckIn] = useState(false);
+
+  // Repeat Yesterday Multi-Meal State
+  const [repeatCandidates, setRepeatCandidates] = useState<RepeatMealCandidate[]>([]);
+  const [repeatSelectorVisible, setRepeatSelectorVisible] = useState(false);
 
   const router = useRouter();
   const {
@@ -261,8 +279,7 @@ export default function HomeScreen() {
         .from('weight_logs')
         .select('*')
         .eq('user_id', uid)
-        .gte('recorded_at', startIso)
-        .lte('recorded_at', endIso)
+        .or(`log_date.eq.${dateStr},and(recorded_at.gte.${startIso},recorded_at.lte.${endIso})`)
         .order('recorded_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -271,6 +288,65 @@ export default function HomeScreen() {
         setTodaysWeight(weightData as WeightLog);
       } else {
         setTodaysWeight(null);
+      }
+
+      // 6. Check Weekly Check-In Eligibility (7+ days elapsed)
+      try {
+        const todayStr = getLocalDateString();
+        const { data: profRow } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+        const currentProf = profRow as Profile | null;
+
+        if (currentProf) {
+          const checkInRefDate = currentProf.last_check_in_date || (currentProf.created_at ? currentProf.created_at.split('T')[0] : null);
+          if (checkInRefDate) {
+            const daysDiff = Math.floor((new Date(todayStr).getTime() - new Date(checkInRefDate).getTime()) / (1000 * 60 * 60 * 24));
+            setDaysSinceLastCheckIn(daysDiff);
+
+            if (daysDiff >= 7) {
+              setIsCheckInEligible(true);
+              const sevenDaysAgo = new Date();
+              sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+              const sevenDaysAgoStr = getLocalDateString(sevenDaysAgo);
+
+              const [weightsRes, summariesRes] = await Promise.all([
+                supabase
+                  .from('weight_logs')
+                  .select('weight, log_date')
+                  .eq('user_id', uid)
+                  .gte('log_date', sevenDaysAgoStr)
+                  .order('log_date', { ascending: true }),
+                supabase
+                  .from('daily_summaries')
+                  .select('summary_date, total_calories')
+                  .eq('user_id', uid)
+                  .gte('summary_date', sevenDaysAgoStr),
+              ]);
+
+              const recentWeights = weightsRes.data || [];
+              const recentSummaries = summariesRes.data || [];
+
+              if (recentWeights.length > 0 || weightData) {
+                const allWeights = [...recentWeights];
+                if (weightData && !allWeights.some(w => w.log_date === (weightData as any).log_date)) {
+                  allWeights.push({ weight: (weightData as any).weight, log_date: (weightData as any).log_date || todayStr });
+                }
+                const rec = evaluateWeeklyCheckIn({
+                  profile: currentProf,
+                  weightLogs: allWeights,
+                  dailySummaries: recentSummaries,
+                });
+                setCheckInRecommendation(rec);
+              } else {
+                setCheckInRecommendation(null);
+              }
+            } else {
+              setIsCheckInEligible(false);
+              setCheckInRecommendation(null);
+            }
+          }
+        }
+      } catch (checkInErr) {
+        console.warn('Check-in check error:', checkInErr);
       }
     } catch (err) {
       console.error("fetchDashboardData error:", err);
@@ -328,6 +404,11 @@ export default function HomeScreen() {
           setUserId(currentUser.id);
         }
 
+        const avatarUrl = currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture || null;
+        if (avatarUrl && isMounted) {
+          setGoogleAvatarUrl(avatarUrl);
+        }
+
         const actualName = (
           currentUser.user_metadata?.full_name ||
           currentUser.user_metadata?.name ||
@@ -366,16 +447,19 @@ export default function HomeScreen() {
             console.warn("Profile upsert error:", upsertErr);
           }
         } else if (actualName && profileData.full_name !== actualName) {
-          try {
-            const { data: updatedProfile } = await supabase
-              .from('profiles')
-              .update({ full_name: actualName })
-              .eq('id', currentUser.id)
-              .select()
-              .maybeSingle();
-            if (updatedProfile) profileData = updatedProfile as Profile;
-          } catch (updateErr) {
-            console.warn("Profile name sync error:", updateErr);
+          // Only sync OAuth name if user has not set a custom display_name
+          if (!profileData.display_name) {
+            try {
+              const { data: updatedProfile } = await supabase
+                .from('profiles')
+                .update({ full_name: actualName })
+                .eq('id', currentUser.id)
+                .select()
+                .maybeSingle();
+              if (updatedProfile) profileData = updatedProfile as Profile;
+            } catch (updateErr) {
+              console.warn("Profile name sync error:", updateErr);
+            }
           }
         }
 
@@ -501,6 +585,18 @@ export default function HomeScreen() {
     useCallback(() => {
       const checkPendingRefresh = async () => {
         try {
+          // Immediately apply cached name & avatar for zero-flicker UI updates
+          if (userId) {
+            const cachedName = await AsyncStorage.getItem(`cached_user_name_${userId}`);
+            if (cachedName && cachedName.trim() && cachedName.trim() !== 'User') {
+              setUserName(cachedName.trim());
+            }
+            const cachedAvatar = await AsyncStorage.getItem(`cached_user_avatar_${userId}`);
+            if (cachedAvatar) {
+              setProfile((prev) => (prev ? { ...prev, avatar_id: cachedAvatar } : prev));
+            }
+          }
+
           const shouldRefresh = await AsyncStorage.getItem('should_refresh_home_goals');
           if (shouldRefresh === 'true') {
             await AsyncStorage.removeItem('should_refresh_home_goals');
@@ -520,7 +616,7 @@ export default function HomeScreen() {
                   await AsyncStorage.setItem(`cached_user_name_${userId}`, name);
                 }
               }
-              fetchDashboardData(userId, selectedDate);
+              fetchDashboardData(userId, selectedDate, true);
             }
           }
         } catch (e) {
@@ -872,8 +968,185 @@ export default function HomeScreen() {
       // Update profile weight
       await supabase.from('profiles').update({ weight_kg: weight }).eq('id', userId);
       setProfile(prev => prev ? { ...prev, weight_kg: weight } : null);
+
+      // Check if weekly check-in is due (7+ days since last check-in or creation)
+      const currentProf = profile ? { ...profile, weight_kg: weight } : null;
+      const checkInRefDate = currentProf?.last_check_in_date || (currentProf?.created_at ? currentProf.created_at.split('T')[0] : null);
+      if (currentProf && checkInRefDate) {
+        const daysDiff = Math.floor((new Date(todayDate).getTime() - new Date(checkInRefDate).getTime()) / (1000 * 60 * 60 * 24));
+        setDaysSinceLastCheckIn(daysDiff);
+
+        if (daysDiff >= 7) {
+          setIsCheckInEligible(true);
+          const sevenDaysAgo = new Date();
+          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+          const sevenDaysAgoStr = getLocalDateString(sevenDaysAgo);
+
+          const [recentWeightsRes, recentSummariesRes] = await Promise.all([
+            supabase
+              .from('weight_logs')
+              .select('weight, log_date')
+              .eq('user_id', userId)
+              .gte('log_date', sevenDaysAgoStr)
+              .order('log_date', { ascending: true }),
+            supabase
+              .from('daily_summaries')
+              .select('summary_date, total_calories')
+              .eq('user_id', userId)
+              .gte('summary_date', sevenDaysAgoStr),
+          ]);
+
+          const recentWeights = recentWeightsRes.data || [];
+          if (!recentWeights.some(w => w.log_date === todayDate)) {
+            recentWeights.push({ weight, log_date: todayDate });
+          }
+
+          const rec = evaluateWeeklyCheckIn({
+            profile: currentProf,
+            weightLogs: recentWeights,
+            dailySummaries: recentSummariesRes.data || [],
+          });
+          setCheckInRecommendation(rec);
+
+          // Prompt the user to review targets
+          setTimeout(() => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showAlert(
+              '🎯 Weekly Check-In Ready!',
+              '7 days have elapsed since your last check-in. Review your weight trend and calibrate your calorie & macro targets now?',
+              [
+                { text: 'Later', style: 'cancel' },
+                {
+                  text: 'Review Targets',
+                  onPress: () => setIsCheckInModalVisible(true),
+                },
+              ]
+            );
+          }, 350);
+        }
+      }
     } catch (err: any) {
       showAlert('Error logging weight', err.message);
+    }
+  };
+
+  const handleAcceptCheckIn = async () => {
+    if (!userId || !checkInRecommendation) return;
+    setIsSavingCheckIn(true);
+    try {
+      const todayDate = getLocalDateString();
+      const rec = checkInRecommendation;
+
+      // 1. Insert into check_ins table
+      const { error: checkInError } = await supabase.from('check_ins').insert({
+        user_id: userId,
+        check_in_date: todayDate,
+        scale_weight: rec.currentScaleWeight,
+        trend_weight: rec.currentTrendWeight,
+        previous_trend_weight: rec.previousTrendWeight,
+        weight_delta_kg: rec.weightDeltaKg,
+        rate_percent: rec.ratePercent,
+        days_logged: rec.daysLogged,
+        status: 'accepted',
+        action_type: rec.actionType,
+        old_calories: rec.oldCalories,
+        new_calories: rec.newCalories,
+        old_protein: rec.oldProtein,
+        new_protein: rec.newProtein,
+        old_carbs: rec.oldCarbs,
+        new_carbs: rec.newCarbs,
+        old_fat: rec.oldFat,
+        new_fat: rec.newFat,
+        coach_message: rec.rationale,
+      });
+
+      if (checkInError) throw checkInError;
+
+      // 2. Update profile with new targets, last_check_in_date, and trend_weight_kg
+      const updatedProfileFields = {
+        target_calories: rec.newCalories,
+        target_protein: rec.newProtein,
+        target_carbs: rec.newCarbs,
+        target_fat: rec.newFat,
+        protein_multiplier: rec.proteinMultiplier,
+        calibrated_weight_kg: rec.calibratedWeightKg || rec.currentScaleWeight,
+        last_check_in_date: todayDate,
+        trend_weight_kg: rec.currentTrendWeight,
+      };
+
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update(updatedProfileFields)
+        .eq('id', userId);
+
+      if (profileError) throw profileError;
+
+      // 3. Update local state
+      setProfile(prev => prev ? { ...prev, ...updatedProfileFields } : null);
+      setIsCheckInModalVisible(false);
+      setIsCheckInEligible(false);
+
+      showAlert(
+        '🎯 Targets Updated!',
+        `Your daily calorie budget is now ${rec.newCalories} kcal with macros recalibrated for your current bodyweight.`
+      );
+    } catch (err: any) {
+      showAlert('Check-In Save Failed', err.message || 'Could not save check-in.');
+    } finally {
+      setIsSavingCheckIn(false);
+    }
+  };
+
+  const handleKeepCurrentCheckIn = async () => {
+    if (!userId || !checkInRecommendation) return;
+    setIsSavingCheckIn(true);
+    try {
+      const todayDate = getLocalDateString();
+      const rec = checkInRecommendation;
+
+      // 1. Insert into check_ins table as kept_current
+      await supabase.from('check_ins').insert({
+        user_id: userId,
+        check_in_date: todayDate,
+        scale_weight: rec.currentScaleWeight,
+        trend_weight: rec.currentTrendWeight,
+        previous_trend_weight: rec.previousTrendWeight,
+        weight_delta_kg: rec.weightDeltaKg,
+        rate_percent: rec.ratePercent,
+        days_logged: rec.daysLogged,
+        status: 'kept_current',
+        action_type: rec.actionType,
+        old_calories: rec.oldCalories,
+        new_calories: rec.oldCalories,
+        old_protein: rec.oldProtein,
+        new_protein: rec.oldProtein,
+        old_carbs: rec.oldCarbs,
+        new_carbs: rec.oldCarbs,
+        old_fat: rec.oldFat,
+        new_fat: rec.oldFat,
+        coach_message: 'User opted to keep current targets.',
+      });
+
+      // 2. Update profile with last_check_in_date and trend_weight_kg
+      const updatedProfileFields = {
+        last_check_in_date: todayDate,
+        trend_weight_kg: rec.currentTrendWeight,
+      };
+
+      await supabase
+        .from('profiles')
+        .update(updatedProfileFields)
+        .eq('id', userId);
+
+      setProfile(prev => prev ? { ...prev, ...updatedProfileFields } : null);
+      setIsCheckInModalVisible(false);
+      setIsCheckInEligible(false);
+
+      showAlert('Plan Preserved', 'Your current nutrition targets will remain active for the next week.');
+    } catch (err: any) {
+      showAlert('Error', err.message);
+    } finally {
+      setIsSavingCheckIn(false);
     }
   };
 
@@ -1131,64 +1404,144 @@ export default function HomeScreen() {
         .eq('user_id', userId)
         .eq('meal_type', activeMealType)
         .gte('created_at', yStart)
-        .lte('created_at', yEnd);
+        .lte('created_at', yEnd)
+        .order('created_at', { ascending: true });
 
       if (!yesterdayEntries || yesterdayEntries.length === 0) {
         showAlert('No meals found', `You didn't log any ${activeMealType} yesterday.`);
         return;
       }
 
-      // Combine yesterday's entries into a single reviewable estimate
-      const combinedFoods: FoodItem[] = [];
-      const combinedTotals: MealTotals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
-      
-      yesterdayEntries.forEach(entry => {
-        combinedTotals.calories += Number(entry.calories);
-        combinedTotals.protein_g += Number(entry.protein);
-        combinedTotals.carbs_g += Number(entry.carbs);
-        combinedTotals.fat_g += Number(entry.fat);
-        
+      // Convert each yesterday entry into a candidate
+      const candidates: RepeatMealCandidate[] = yesterdayEntries.map((entry: any) => {
         let parsedFoods: FoodItem[] = [];
         if (entry.meal_food && entry.meal_food.length > 0) {
           parsedFoods = entry.meal_food.map((f: any) => ({
             name: f.name,
-            quantity: f.quantity,
-            unit: f.unit,
-            calories: f.calories,
-            protein_g: f.protein_g,
-            carbs_g: f.carbs_g,
-            fat_g: f.fat_g,
+            quantity: Number(f.quantity) || 1,
+            unit: f.unit || 'serving',
+            calories: Number(f.calories) || 0,
+            protein_g: Number(f.protein_g) || 0,
+            carbs_g: Number(f.carbs_g) || 0,
+            fat_g: Number(f.fat_g) || 0,
           }));
         } else {
           try {
-            if (entry.raw_input && typeof entry.raw_input === 'object' && 'foods' in (entry.raw_input as any)) {
-              parsedFoods = (entry.raw_input as any).foods;
+            if (entry.raw_input && typeof entry.raw_input === 'object' && Array.isArray((entry.raw_input as any).foods)) {
+              parsedFoods = (entry.raw_input as any).foods.map((f: any) => ({
+                name: f.name || 'Item',
+                quantity: Number(f.quantity) || 1,
+                unit: f.unit || 'serving',
+                calories: Number(f.calories) || 0,
+                protein_g: Number(f.protein_g) || 0,
+                carbs_g: Number(f.carbs_g) || 0,
+                fat_g: Number(f.fat_g) || 0,
+              }));
             }
           } catch(e) {}
         }
-        
-        if (parsedFoods.length > 0) {
-          combinedFoods.push(...parsedFoods);
-        } else {
-          combinedFoods.push({
-            name: entry.meal_name || 'Unknown',
-            quantity: 1, unit: 'serving',
-            calories: entry.calories, protein_g: entry.protein, carbs_g: entry.carbs, fat_g: entry.fat
-          });
+
+        if (parsedFoods.length === 0) {
+          parsedFoods = [{
+            name: entry.title || entry.meal_name || 'Item',
+            quantity: 1,
+            unit: 'serving',
+            calories: Number(entry.calories) || 0,
+            protein_g: Number(entry.protein) || 0,
+            carbs_g: Number(entry.carbs) || 0,
+            fat_g: Number(entry.fat) || 0,
+          }];
         }
+
+        const mealTitle = (entry.title || entry.meal_name || activeMealType).trim();
+        let timeStr = '';
+        if (entry.created_at) {
+          try {
+            const d = new Date(entry.created_at);
+            if (!isNaN(d.getTime())) {
+              timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            }
+          } catch(e) {}
+        }
+        const foodSummary = parsedFoods.map(f => f.name).filter(Boolean).join(', ');
+
+        return {
+          id: entry.id,
+          meal_name: mealTitle,
+          created_at: entry.created_at,
+          timeStr,
+          calories: Number(entry.calories) || 0,
+          protein: Number(entry.protein) || 0,
+          carbs: Number(entry.carbs) || 0,
+          fat: Number(entry.fat) || 0,
+          foods: parsedFoods,
+          foodSummary,
+        };
       });
 
-      setEstimate({
-        meal_name: `Yesterday's ${activeMealType}`,
-        foods: combinedFoods,
-        totals: combinedTotals,
-        confidence: 1.0,
-      });
-      setReviewVisible(true);
+      // If only 1 meal was logged yesterday, bypass selector and open review directly with exact title
+      if (candidates.length === 1) {
+        const single = candidates[0];
+        setEstimate({
+          meal_name: single.meal_name,
+          title: single.meal_name,
+          foods: single.foods,
+          totals: {
+            calories: single.calories,
+            protein_g: single.protein,
+            carbs_g: single.carbs,
+            fat_g: single.fat,
+          },
+          confidence: 1.0,
+        });
+        setReviewVisible(true);
+        return;
+      }
+
+      // If multiple meals logged yesterday, let user select via modal
+      setRepeatCandidates(candidates);
+      setRepeatSelectorVisible(true);
     } catch (e) {
       console.error(e);
       showAlert('Error', 'Could not fetch yesterday\'s meals.');
     }
+  };
+
+  const handleConfirmRepeatMeals = (selected: RepeatMealCandidate[]) => {
+    setRepeatSelectorVisible(false);
+    if (!selected || selected.length === 0) return;
+
+    // Smart Concatenation:
+    // If 1 meal selected: keep that exact title.
+    // If multiple meals: join names with " + ". Fall back to `${activeMealType} Combo` if > 32 chars.
+    let finalTitle: string;
+    if (selected.length === 1) {
+      finalTitle = selected[0].meal_name;
+    } else {
+      const names = selected.map(s => s.meal_name.trim()).filter(Boolean);
+      const joined = names.join(' + ');
+      finalTitle = joined.length > 0 && joined.length <= 32 ? joined : `${activeMealType} Combo`;
+    }
+
+    const combinedFoods = selected.flatMap(s => s.foods);
+    const combinedTotals: MealTotals = selected.reduce(
+      (acc, s) => ({
+        calories: acc.calories + s.calories,
+        protein_g: Math.round((acc.protein_g + s.protein) * 10) / 10,
+        carbs_g: Math.round((acc.carbs_g + s.carbs) * 10) / 10,
+        fat_g: Math.round((acc.fat_g + s.fat) * 10) / 10,
+      }),
+      { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 }
+    );
+
+    setEstimate({
+      meal_name: finalTitle,
+      title: finalTitle,
+      foods: combinedFoods,
+      totals: combinedTotals,
+      confidence: 1.0,
+    });
+    setReviewVisible(true);
   };
 
   const greeting = () => {
@@ -1357,8 +1710,18 @@ export default function HomeScreen() {
             <Text style={[styles.name, { color: textPrimary }]}>{userName}</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Pressable style={[styles.profileButton, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }]} onPress={() => router.push('/settings')}>
-              <Ionicons name="person-outline" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
+            <Pressable
+              style={[styles.profileButton, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }]}
+              onPress={() => router.push('/settings')}
+              accessibilityRole="button"
+              accessibilityLabel="Profile settings"
+            >
+              <UserAvatar
+                avatarId={profile?.avatar_id}
+                googleAvatarUrl={googleAvatarUrl}
+                fallbackInitial={(userName.trim()[0] || 'U').toUpperCase()}
+                size={40}
+              />
             </Pressable>
             <Pressable style={[styles.profileButton, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }]} onPress={handleSignOut}>
               <Ionicons name="log-out-outline" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
@@ -1425,6 +1788,17 @@ export default function HomeScreen() {
             isLoading={isDashboardLoading}
           />
         </View>
+
+        {isCheckInEligible && !isCheckInBannerDismissed && (
+          <CheckInBanner
+            hasRecentWeight={!!checkInRecommendation}
+            daysSinceLastCheckIn={daysSinceLastCheckIn}
+            isFirstCheckIn={!profile?.last_check_in_date}
+            onReviewPress={() => setIsCheckInModalVisible(true)}
+            onLogWeightPress={() => setAddWeightVisible(true)}
+            onDismiss={() => setIsCheckInBannerDismissed(true)}
+          />
+        )}
 
         <View ref={mealSectionsRef} collapsable={false}>
           {MEAL_TYPES.map((meal) => (
@@ -1497,8 +1871,26 @@ export default function HomeScreen() {
       <LogWeightModal
         visible={addWeightVisible}
         initialWeight={todaysWeight?.weight ?? profile?.weight_kg}
+        isEditing={!!todaysWeight}
         onClose={() => setAddWeightVisible(false)}
         onLogWeight={handleLogWeight}
+      />
+
+      <WeeklyCheckInModal
+        visible={isCheckInModalVisible}
+        recommendation={checkInRecommendation}
+        onClose={() => setIsCheckInModalVisible(false)}
+        onAccept={handleAcceptCheckIn}
+        onKeepCurrent={handleKeepCurrentCheckIn}
+        isSaving={isSavingCheckIn}
+      />
+
+      <RepeatMealSelectorModal
+        visible={repeatSelectorVisible}
+        mealType={activeMealType}
+        candidates={repeatCandidates}
+        onClose={() => setRepeatSelectorVisible(false)}
+        onConfirm={handleConfirmRepeatMeals}
       />
 
       <MealReviewModal

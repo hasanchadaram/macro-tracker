@@ -55,6 +55,8 @@ export function WeeklyCheckInModal({
     oldCalories,
     newCalories,
     calorieDelta,
+    oldMaintenance,
+    newMaintenance,
     oldProtein,
     newProtein,
     oldCarbs,
@@ -64,6 +66,8 @@ export function WeeklyCheckInModal({
     targetSteps,
     safetyFloor,
   } = recommendation;
+
+  const hasTargetChanges = calorieDelta !== 0;
 
   const cardBg = isDark ? '#1E293B' : '#FFFFFF';
   const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
@@ -208,7 +212,9 @@ export function WeeklyCheckInModal({
             {/* 3. Nutrition Targets Comparison */}
             <View style={[styles.sectionCard, { backgroundColor: innerCardBg, borderColor }]}>
               <View style={styles.cardHeaderRow}>
-                <Text style={[styles.sectionLabel, { color: textSecondary }]}>NEW TARGETS</Text>
+                <Text style={[styles.sectionLabel, { color: textSecondary }]}>
+                  {hasTargetChanges ? 'NEW TARGETS' : 'CURRENT TARGETS (MAINTAINED)'}
+                </Text>
                 {calorieDelta !== 0 && (
                   <View style={[styles.deltaPill, { backgroundColor: calorieDelta > 0 ? 'rgba(99, 102, 241, 0.12)' : 'rgba(245, 158, 11, 0.12)' }]}>
                     <Text style={[styles.deltaText, { color: calorieDelta > 0 ? '#6366F1' : '#F59E0B' }]}>
@@ -238,6 +244,29 @@ export function WeeklyCheckInModal({
                   )}
                 </View>
               </View>
+
+              {/* Maintenance Calories Row */}
+              {oldMaintenance !== undefined && newMaintenance !== undefined && (
+                <View style={[styles.targetRow, { borderBottomColor: borderColor }]}>
+                  <View style={styles.targetIconRow}>
+                    <View style={[styles.targetIconBox, { backgroundColor: 'rgba(99, 102, 241, 0.15)' }]}>
+                      <Ionicons name="speedometer" size={18} color="#6366F1" />
+                    </View>
+                    <Text style={[styles.targetName, { color: textPrimary }]}>Maintenance</Text>
+                  </View>
+                  <View style={styles.targetValues}>
+                    {oldMaintenance !== newMaintenance ? (
+                      <>
+                        <Text style={[styles.oldVal, { color: textSecondary }]}>{oldMaintenance}</Text>
+                        <Ionicons name="arrow-forward" size={14} color={textSecondary} style={{ marginHorizontal: 8 }} />
+                        <Text style={[styles.newVal, { color: textPrimary }]}>{newMaintenance} kcal</Text>
+                      </>
+                    ) : (
+                      <Text style={[styles.newVal, { color: textPrimary }]}>{newMaintenance} kcal</Text>
+                    )}
+                  </View>
+                </View>
+              )}
 
               {/* Protein Row */}
               <View style={[styles.targetRow, { borderBottomColor: borderColor }]}>
@@ -389,25 +418,25 @@ export function WeeklyCheckInModal({
                   ) : (
                     <>
                       <Text style={styles.primaryButtonText}>
-                        {actionType === 'hold' || actionType === 'adherence_warning' || actionType === 'floor_reached'
-                          ? 'Acknowledge & Continue'
-                          : 'Accept New Targets'}
+                        {hasTargetChanges ? 'Accept New Targets' : 'Acknowledge & Continue'}
                       </Text>
                       <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
                     </>
                   )}
                 </Pressable>
 
-                <Pressable
-                  style={({ pressed }) => [styles.secondaryButton, pressed && { opacity: 0.7 }]}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    onKeepCurrent();
-                  }}
-                  disabled={isSaving}
-                >
-                  <Text style={[styles.secondaryButtonText, { color: textSecondary }]}>Keep Current Targets</Text>
-                </Pressable>
+                {hasTargetChanges && (
+                  <Pressable
+                    style={({ pressed }) => [styles.secondaryButton, pressed && { opacity: 0.7 }]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      onKeepCurrent();
+                    }}
+                    disabled={isSaving}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: textSecondary }]}>Keep Current Targets</Text>
+                  </Pressable>
+                )}
               </>
             )}
           </View>

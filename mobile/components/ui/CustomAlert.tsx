@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { Modal, View, Text, StyleSheet, Pressable, Animated } from 'react-native';
+import React, { createContext, useContext, useState, useRef, ReactNode } from 'react';
+import { Modal, View, Text, StyleSheet, Pressable, Animated, ScrollView } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export interface AlertButton {
@@ -32,11 +32,13 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   const [visible, setVisible] = useState(false);
   const [options, setOptions] = useState<AlertOptions | null>(null);
   const [fadeAnim] = useState(new Animated.Value(0));
+  const alertIdRef = useRef(0);
   
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
   const showAlert = (title: string, message?: string, buttons?: AlertButton[]) => {
+    alertIdRef.current++;
     setOptions({ title, message, buttons });
     setVisible(true);
     Animated.timing(fadeAnim, {
@@ -46,14 +48,18 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     }).start();
   };
 
-  const hideAlert = () => {
+  const hideAlert = (callback?: () => void) => {
+    const currentId = alertIdRef.current;
     Animated.timing(fadeAnim, {
       toValue: 0,
       duration: 150,
       useNativeDriver: true,
     }).start(() => {
-      setVisible(false);
-      setOptions(null);
+      if (alertIdRef.current === currentId) {
+        setVisible(false);
+        setOptions(null);
+      }
+      if (callback) callback();
     });
   };
 
@@ -62,7 +68,7 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       return (
         <Pressable
           style={[styles.button, { borderTopColor: isDark ? '#334155' : '#E2E8F0', borderTopWidth: 1 }]}
-          onPress={hideAlert}
+          onPress={() => hideAlert()}
         >
           <Text style={[styles.buttonText, { color: '#3B82F6', fontWeight: '600' }]}>OK</Text>
         </Pressable>
@@ -92,8 +98,9 @@ export function AlertProvider({ children }: { children: ReactNode }) {
                 }
               ]}
               onPress={() => {
-                hideAlert();
-                if (btn.onPress) btn.onPress();
+                hideAlert(() => {
+                  if (btn.onPress) btn.onPress();
+                });
               }}
             >
               <Text style={[
@@ -119,16 +126,27 @@ export function AlertProvider({ children }: { children: ReactNode }) {
             styles.alertBox, 
             { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }
           ]}>
-            <View style={styles.contentContainer}>
+            <ScrollView 
+              style={{ maxHeight: 420 }}
+              contentContainerStyle={styles.contentContainer}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+            >
               <Text style={[styles.title, { color: isDark ? '#F8FAFC' : '#0F172A' }]}>
                 {options?.title}
               </Text>
               {options?.message && (
-                <Text style={[styles.message, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+                <Text style={[
+                  styles.message, 
+                  { 
+                    color: isDark ? '#94A3B8' : '#64748B',
+                    textAlign: options.message.includes('\n') ? 'left' : 'center',
+                  }
+                ]}>
                   {options.message}
                 </Text>
               )}
-            </View>
+            </ScrollView>
             {renderButtons()}
           </View>
         </Animated.View>

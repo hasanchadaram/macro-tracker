@@ -15,9 +15,10 @@ interface CombinedChartProps {
   data: ChartData[];
   targetCalories: number;
   isDark: boolean;
+  checkInDates?: string[];
 }
 
-export function CombinedChart({ data, targetCalories, isDark }: CombinedChartProps) {
+export function CombinedChart({ data, targetCalories, isDark, checkInDates }: CombinedChartProps) {
   const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
   const textSecondary = isDark ? '#94A3B8' : '#64748B';
   const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
@@ -126,6 +127,41 @@ export function CombinedChart({ data, targetCalories, isDark }: CombinedChartPro
             }
           ]} 
         />
+
+        {/* Check-In Vertical Lines */}
+        {checkInDates && checkInDates.length > 0 && data.map((d, i) => {
+          if (!checkInDates.includes(d.date)) return null;
+          const x = getX(i);
+          return (
+            <React.Fragment key={`checkin-${d.date}-${i}`}>
+              <View
+                style={{
+                  position: 'absolute',
+                  left: x,
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  borderLeftWidth: 1,
+                  borderColor: isDark ? 'rgba(99, 102, 241, 0.45)' : 'rgba(99, 102, 241, 0.4)',
+                  borderStyle: 'dashed',
+                  zIndex: 1,
+                }}
+              />
+              <View
+                style={{
+                  position: 'absolute',
+                  left: x - 2,
+                  top: 2,
+                  width: 5,
+                  height: 5,
+                  borderRadius: 2.5,
+                  backgroundColor: '#6366F1',
+                  zIndex: 3,
+                }}
+              />
+            </React.Fragment>
+          );
+        })}
 
         {/* Calorie Line & Points */}
         {data.map((d, i) => {
@@ -302,14 +338,18 @@ export function CombinedChart({ data, targetCalories, isDark }: CombinedChartPro
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendColor, { backgroundColor: '#60A5FA' }]} />
-          <Text style={[styles.legendText, { color: textPrimary }]}>
-            Weight {validWeights.length > 0 ? `(${formatWeight(validWeights[validWeights.length - 1])} kg)` : ''}
-          </Text>
+          <Text style={[styles.legendText, { color: textPrimary }]}>Weight</Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendLine, { backgroundColor: textSecondary }]} />
           <Text style={[styles.legendText, { color: textPrimary }]}>Target Cal</Text>
         </View>
+        {checkInDates && checkInDates.length > 0 && (
+          <View style={styles.legendItem}>
+            <View style={{ width: 10, height: 1, borderTopWidth: 1, borderColor: '#6366F1', borderStyle: 'dashed' }} />
+            <Text style={[styles.legendText, { color: textPrimary }]}>Check-In</Text>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -358,9 +398,13 @@ const styles = StyleSheet.create({
   },
   legend: {
     flexDirection: 'row',
-    marginTop: 20,
+    flexWrap: 'wrap',
+    marginTop: 18,
     justifyContent: 'center',
-    gap: 16,
+    alignItems: 'center',
+    rowGap: 8,
+    columnGap: 16,
+    paddingHorizontal: 12,
   },
   legendItem: {
     flexDirection: 'row',

@@ -187,9 +187,12 @@ export function MealReviewModal({
   const isZeroMeal = validFoods.length === 0 || totals.calories <= 0;
 
   const handleSave = () => {
+    const finalMealName = (mealName.trim() || estimate?.meal_name || mealType).trim();
+    const finalTitle = (title.trim() || finalMealName).trim();
+
     if (isZeroMeal) {
       if (isEditMode) {
-        onSave(mealName, title, [], { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+        onSave(finalMealName, finalTitle, [], { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
       } else {
         onClose();
       }
@@ -198,7 +201,7 @@ export function MealReviewModal({
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Strip internal UI properties (_id, _quantityStr)
     const cleanedFoods: FoodItem[] = validFoods.map(({ _id, _quantityStr, ...rest }) => rest);
-    onSave(mealName, title, cleanedFoods, computeTotals(cleanedFoods));
+    onSave(finalMealName, finalTitle, cleanedFoods, computeTotals(cleanedFoods));
   };
 
   const cardBg = isDark ? '#1E293B' : '#FFFFFF';
@@ -257,10 +260,32 @@ export function MealReviewModal({
             </Pressable>
           </View>
 
-          {/* Meal Name */}
+          {/* Meal Name (Editable) */}
           <View style={[styles.mealNameRow, { borderColor }]}>
-            <Text style={{ fontSize: 24 }}>🍽️</Text>
-            <Text style={[styles.mealNameText, { color: textPrimary }]}>{mealName}</Text>
+            <View
+              style={[
+                styles.mealNameInputWrapper,
+                {
+                  borderColor,
+                  backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+                },
+              ]}
+            >
+              <Text style={{ fontSize: 20 }}>🍽️</Text>
+              <TextInput
+                style={[styles.mealNameInput, { color: textPrimary }]}
+                value={mealName}
+                onChangeText={(text) => {
+                  setMealName(text);
+                  setTitle(text);
+                }}
+                placeholder="Meal Name (e.g. Chicken Rice Bowl)"
+                placeholderTextColor={textSecondary}
+                maxLength={50}
+                returnKeyType="done"
+              />
+              <Ionicons name="pencil" size={15} color={textSecondary} />
+            </View>
           </View>
 
           {/* Foods Table */}
@@ -417,16 +442,24 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   mealNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingBottom: 16,
+    paddingBottom: 14,
     marginBottom: 12,
     borderBottomWidth: 1,
   },
-  mealNameText: {
-    fontSize: 18,
+  mealNameInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+    gap: 8,
+  },
+  mealNameInput: {
+    flex: 1,
+    fontSize: 16,
     fontWeight: '600',
+    padding: 0,
   },
   foodsList: {
     maxHeight: 280,

@@ -65,16 +65,26 @@ export function CalendarModal({
       const endStr = getLocalDateString(endOfMonth);
 
       try {
-        const { data } = await supabase
-          .from('daily_summaries')
-          .select('summary_date')
-          .eq('user_id', userId)
-          .gte('summary_date', startStr)
-          .lte('summary_date', endStr)
-          .gt('total_calories', 0); // Only days with logged calories
+        const [summariesRes, mealsRes] = await Promise.all([
+          supabase
+            .from('daily_summaries')
+            .select('summary_date')
+            .eq('user_id', userId)
+            .gte('summary_date', startStr)
+            .lte('summary_date', endStr)
+            .gt('total_calories', 0),
+          supabase
+            .from('meal_entries')
+            .select('summary_date')
+            .eq('user_id', userId)
+            .gte('summary_date', startStr)
+            .lte('summary_date', endStr)
+        ]);
 
-        if (isMounted && data) {
-          const dates = new Set(data.map(d => d.summary_date));
+        if (isMounted) {
+          const dates = new Set<string>();
+          summariesRes.data?.forEach(d => { if (d.summary_date) dates.add(d.summary_date); });
+          mealsRes.data?.forEach(d => { if (d.summary_date) dates.add(d.summary_date); });
           setLoggedDates(dates);
         }
       } catch (error) {

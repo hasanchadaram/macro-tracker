@@ -21,6 +21,7 @@ import {
   calculateNutritionTargets,
   getDefaultProteinMultiplier,
   getProteinBaselineInfo,
+  getCalorieSafetyFloor,
   formatWeight,
   type ProteinBaselineInfo,
   type GoalType,
@@ -322,8 +323,9 @@ export function OnboardingModal({ visible, onSave, onSkip, initialStep, initialP
         return;
       }
 
-      // 2. Check if below population safety threshold (only if BMR is above the threshold)
-      const effectiveFloor = !isNaN(bmrValue) ? Math.min(minCalories, bmrValue) : minCalories;
+      // 2. Check if below physiological safety floor
+      const parsedTdee = parseFloat(maintenanceCalories) || (bmrValue ? bmrValue * 1.2 : 2000);
+      const effectiveFloor = getCalorieSafetyFloor(gender, parsedTdee, bmrValue);
       if (cals < effectiveFloor) {
         showWarning(
           'Calories Very Low',

@@ -28,6 +28,7 @@ import { MealSection } from '@/components/MealSection';
 import { AddFoodModal } from '@/components/AddFoodModal';
 import { ScanningLoader } from '@/components/ScanningLoader';
 import { invokeScanFoodWithProgress } from '@/lib/scan';
+import { clearMealDraft } from '@/lib/mealDraft';
 import { MealReviewModal } from '@/components/MealReviewModal';
 import { OnboardingModal } from '@/components/OnboardingModal';
 import { AddExerciseModal } from '@/components/AddExerciseModal';
@@ -195,6 +196,7 @@ export default function HomeScreen() {
   const exerciseSectionRef = useRef<View>(null);
   const weightSectionRef = useRef<View>(null);
   const insightsTabRef = useRef<View>(null);
+  const lastActiveDateRef = useRef<string>(getLocalDateString());
 
   const walkthroughTargetRefs = useRef({
     dailySummary: dailySummaryRef,
@@ -216,7 +218,7 @@ export default function HomeScreen() {
         .from('meal_entries')
         .select('*, meal_food(*)')
         .eq('user_id', uid)
-        .or(`summary_date.eq.${dateStr},and(created_at.gte.${startIso},created_at.lte.${endIso})`)
+        .or(`summary_date.eq.${dateStr},and(summary_date.is.null,created_at.gte.${startIso},created_at.lte.${endIso})`)
         .order('created_at', { ascending: true });
 
       const loadedEntries = (entriesData as MealEntry[]) || [];
@@ -228,6 +230,27 @@ export default function HomeScreen() {
       const sumCarbs = loadedEntries.reduce((s, e) => s + (Number(e.carbs) || 0), 0);
       const sumFat = loadedEntries.reduce((s, e) => s + (Number(e.fat) || 0), 0);
       setDailySummary({ calories: sumCals, protein: sumPro, carbs: sumCarbs, fat: sumFat });
+
+      // 2b. Synchronize daily_summaries in DB with the exact true sum for dateStr
+      supabase
+        .from('daily_summaries')
+        .upsert(
+          {
+            user_id: uid,
+            summary_date: dateStr,
+            total_calories: sumCals,
+            total_protein: sumPro,
+            total_carbs: sumCarbs,
+            total_fat: sumFat,
+            total_fiber: 0,
+            meal_count: loadedEntries.length,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id,summary_date' }
+        )
+        .then(({ error: syncErr }) => {
+          if (syncErr) console.error('Error syncing daily_summaries:', syncErr);
+        });
 
       // 3. Fetch recent foods (limit 10)
       const { data: recentsData } = await supabase
@@ -547,8 +570,11 @@ export default function HomeScreen() {
       if (nextState === 'active') {
         // 1. Check if date rolled over to a new day while idle
         const todayStr = getLocalDateString();
-        if (selectedDate !== todayStr && selectedDate < todayStr) {
-          setSelectedDate(todayStr);
+        if (lastActiveDateRef.current !== todayStr) {
+          if (selectedDate === lastActiveDateRef.current) {
+            setSelectedDate(todayStr);
+          }
+          lastActiveDateRef.current = todayStr;
         }
 
         // 2. Silently refresh profile & user name if missing or needed
@@ -921,6 +947,10 @@ export default function HomeScreen() {
     if (!userId) return;
     try {
       const todayDate = selectedDate || getLocalDateString();
+      if (todayDate > getLocalDateString()) {
+        showAlert('Future Date', 'You cannot log weight for a future date.');
+        return;
+      }
 
       // If user had an earlier starting weight and is logging today, ensure the starting weight
       // was preserved on their account creation date in weight_logs:
@@ -1065,6 +1095,7 @@ export default function HomeScreen() {
       // 2. Update profile with new targets, last_check_in_date, and trend_weight_kg
       const updatedProfileFields = {
         target_calories: rec.newCalories,
+        maintenance_calories: rec.newMaintenance,
         target_protein: rec.newProtein,
         target_carbs: rec.newCarbs,
         target_fat: rec.newFat,
@@ -1085,11 +1116,6 @@ export default function HomeScreen() {
       setProfile(prev => prev ? { ...prev, ...updatedProfileFields } : null);
       setIsCheckInModalVisible(false);
       setIsCheckInEligible(false);
-
-      showAlert(
-        '🎯 Targets Updated!',
-        `Your daily calorie budget is now ${rec.newCalories} kcal with macros recalibrated for your current bodyweight.`
-      );
     } catch (err: any) {
       showAlert('Check-In Save Failed', err.message || 'Could not save check-in.');
     } finally {
@@ -1141,8 +1167,6 @@ export default function HomeScreen() {
       setProfile(prev => prev ? { ...prev, ...updatedProfileFields } : null);
       setIsCheckInModalVisible(false);
       setIsCheckInEligible(false);
-
-      showAlert('Plan Preserved', 'Your current nutrition targets will remain active for the next week.');
     } catch (err: any) {
       showAlert('Error', err.message);
     } finally {
@@ -1184,6 +1208,7 @@ export default function HomeScreen() {
         const isSizeError = data.error.includes('too large') || data.error.includes('3MB') || data.error.includes('10MB');
         if (isSizeError) {
           showAlert('Image Too Large', data.error);
+          setAddModalVisible(true);
           return;
         }
 
@@ -1197,6 +1222,7 @@ export default function HomeScreen() {
               { text: 'Settings', onPress: () => router.push('/settings') }
             ]
           );
+          setAddModalVisible(true);
           return;
         }
         throw new Error(data.error);
@@ -1210,6 +1236,7 @@ export default function HomeScreen() {
       const isSizeError = err.message?.includes('too large') || err.message?.includes('3MB') || err.message?.includes('413');
       if (isSizeError) {
         showAlert('Image Too Large', 'The image is too large to analyze. Please choose a smaller photo or retake it.');
+        setAddModalVisible(true);
         return;
       }
       const isDaily = err.message?.includes('daily limit') || err.message?.includes('add your own API key') || err.message?.includes('Daily scan limit');
@@ -1222,8 +1249,10 @@ export default function HomeScreen() {
             { text: 'Settings', onPress: () => router.push('/settings') }
           ]
         );
+        setAddModalVisible(true);
       } else {
         showAlert('Analysis Failed', err.message || 'Could not analyze meal.');
+        setAddModalVisible(true);
       }
     } finally {
       setScanningType(null);
@@ -1260,6 +1289,8 @@ export default function HomeScreen() {
         if (delError) throw delError;
       }
 
+      const targetDate = editingEntry?.summary_date || selectedDate || getLocalDateString();
+
       const { data, error } = await supabase.functions.invoke('log-meal', {
         body: {
           meal_id: clientMealId,
@@ -1268,7 +1299,7 @@ export default function HomeScreen() {
           title: title,
           foods: foods,
           totals: totals,
-          date: selectedDate,
+          date: targetDate,
         }
       });
 
@@ -1281,7 +1312,8 @@ export default function HomeScreen() {
       setReviewVisible(false);
       setEstimate(null);
       setEditingEntry(null);
-      if (userId) fetchDashboardData(userId, selectedDate, true);
+      clearMealDraft(activeMealType);
+      if (userId) fetchDashboardData(userId, targetDate, true);
     } catch (err: any) {
       const isSizeError = err.message?.includes('too large') || err.message?.includes('3MB') || err.message?.includes('413');
       if (isSizeError) {
@@ -1403,8 +1435,7 @@ export default function HomeScreen() {
         .select('*, meal_food(*)')
         .eq('user_id', userId)
         .eq('meal_type', activeMealType)
-        .gte('created_at', yStart)
-        .lte('created_at', yEnd)
+        .or(`summary_date.eq.${yesterdayStr},and(summary_date.is.null,created_at.gte.${yStart},created_at.lte.${yEnd})`)
         .order('created_at', { ascending: true });
 
       if (!yesterdayEntries || yesterdayEntries.length === 0) {
@@ -1785,11 +1816,14 @@ export default function HomeScreen() {
             targetFat={profile?.target_fat}
             burnedCalories={totalBurnedCalories}
             underEatingThreshold={profile?.under_eating_threshold}
+            goal={profile?.goal}
+            gender={profile?.gender}
+            bmr={profile?.under_eating_threshold}
             isLoading={isDashboardLoading}
           />
         </View>
 
-        {isCheckInEligible && !isCheckInBannerDismissed && (
+        {isCheckInEligible && !isCheckInBannerDismissed && !isFutureDate && (
           <CheckInBanner
             hasRecentWeight={!!checkInRecommendation}
             daysSinceLastCheckIn={daysSinceLastCheckIn}
@@ -1834,7 +1868,14 @@ export default function HomeScreen() {
         <View ref={weightSectionRef} collapsable={false}>
           <WeightSection
             latestLog={todaysWeight}
-            onAddPress={() => setAddWeightVisible(true)}
+            isFutureDate={isFutureDate}
+            onAddPress={() => {
+              if (isFutureDate) {
+                showAlert('Future Date', 'You cannot log weight for a future date.');
+                return;
+              }
+              setAddWeightVisible(true);
+            }}
           />
         </View>
 

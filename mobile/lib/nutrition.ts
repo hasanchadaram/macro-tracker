@@ -165,10 +165,12 @@ export function calculateNutritionTargets({
   const tdee = bmr * pal;
 
   // 3. Goal calorie adjustment
+  const baseFloor = gender === 'Male' ? 1500 : 1200;
   let calTarget = tdee;
   if (goal === 'Lose weight') {
     calTarget -= 450;
-    calTarget = Math.max(calTarget, bmr);
+    const safetyFloor = getCalorieSafetyFloor(gender, tdee, bmr);
+    calTarget = Math.max(calTarget, safetyFloor);
   } else if (goal === 'Gain muscle' || goal === 'Gain Muscle' || goal === 'Gain weight') {
     calTarget += 300;
   }
@@ -238,16 +240,18 @@ export function calculateTrendWeight(
 }
 
 /**
- * Calculates the hard physiological calorie safety floor.
- * Male: max(BMR * 0.9, 1500 kcal)
- * Female / Other: max(BMR * 0.9, 1200 kcal)
+ * Calculates the physiological calorie safety floor.
+ * Base floor: 1500 for Male, 1200 for Female / Other.
+ * Undereating safety floor is max(bmr, baseFloor, TDEE - 500).
  */
 export function getCalorieSafetyFloor(
   gender: string | null | undefined,
-  bmr: number
+  tdee: number,
+  bmr?: number | null
 ): number {
   const baseFloor = gender === 'Male' ? 1500 : 1200;
-  return Math.round(Math.max(bmr * 0.90, baseFloor));
+  const bmrFloor = bmr && bmr > 0 ? Math.round(bmr) : 0;
+  return Math.max(baseFloor, bmrFloor, Math.round(tdee - 500));
 }
 
 export interface CheckInEvaluationParams {
@@ -317,7 +321,8 @@ export function evaluateWeeklyCheckIn({
   // 5. Safety Floor
   let bmr = 10 * currentTrendWeight + 6.25 * heightCm - 5 * age;
   bmr += gender === 'Male' ? 5 : -161;
-  const safetyFloor = getCalorieSafetyFloor(gender, bmr);
+  const tdee = Math.round(bmr * 1.2);
+  const safetyFloor = getCalorieSafetyFloor(gender, tdee, bmr);
   const isAtFloor = oldCalories <= safetyFloor;
 
   // 6. Decision Tree Evaluation
@@ -455,6 +460,10 @@ export function evaluateWeeklyCheckIn({
   const baselineInfo = getProteinBaselineInfo(currentScaleWeight, profile.target_weight_kg, goal);
   let calibratedWeightKg = profile.calibrated_weight_kg || roundWeightNumber(baselineInfo.baseline);
 
+  // Baseline maintenance from profile or calculated TDEE
+  const oldMaintenance = Math.round(profile.maintenance_calories || tdee);
+  let newMaintenance = oldMaintenance;
+
   // When updating (adding or reducing calories in the check-in review process):
   // Equation: calories = (4 * protein) + (4 * carbs) + (8 * fat)
   if (calorieDelta !== 0) {
@@ -480,6 +489,7 @@ export function evaluateWeeklyCheckIn({
     // Exact calorie alignment: calories = (4 * protein) + (4 * carbs) + (8 * fat)
     newCalories = (newProtein * 4) + (newCarbs * 4) + (newFat * 8);
     calibratedWeightKg = roundWeightNumber(baselineInfo.baseline);
+    newMaintenance = Math.max(safetyFloor, oldMaintenance + calorieDelta);
   }
 
   return {
@@ -499,6 +509,8 @@ export function evaluateWeeklyCheckIn({
     oldCalories,
     newCalories,
     calorieDelta: newCalories - oldCalories,
+    oldMaintenance,
+    newMaintenance,
     oldProtein,
     newProtein,
     oldCarbs,
@@ -510,6 +522,74 @@ export function evaluateWeeklyCheckIn({
     targetSteps,
     safetyFloor,
     isAtFloor,
+  };
+}
+
+export interface CalorieZoneResult {
+  color: string;
+  label: string;
+  zone: 'undereating' | 'target' | 'caution' | 'alert';
+}
+
+/**
+ * Evaluates the calorie zone and returns one of 4 canonical colors:
+ * - Red (#EF4444): Undereating (calories < safetyFloor, where safetyFloor = max(bmr, 1200/1500, TDEE - 500))
+ * - Green (#10B981): On Target (safetyFloor <= calories < TDEE + 400)
+ * - Normal Purple (#A855F7): Overeating Caution (TDEE + 400 <= calories <= TDEE + 500)
+ * - Intense Purple (#9333EA): High Surplus Alert (calories > TDEE + 500)
+ */
+export function getCalorieZoneColor(
+  calories: number,
+  target: number,
+  maintenance: number,
+  goal?: string | null,
+  undereatingThreshold?: number | null,
+  gender?: string | null,
+  bmr?: number | null
+): CalorieZoneResult {
+  const tdee = maintenance;
+
+  // Rule: Calorie intake should be more than BMR, more than 1200 (female)/1500 (male), and more than TDEE - 500
+  const floor = undereatingThreshold && undereatingThreshold > 0
+    ? undereatingThreshold
+    : getCalorieSafetyFloor(gender, tdee, bmr);
+
+  // Overeating thresholds anchored on TDEE
+  const cautionThreshold = tdee + 400;
+  const alertThreshold = tdee + 500;
+
+  // 1. High Surplus Alert (> alertThreshold) -> Intense Purple
+  if (calories > alertThreshold) {
+    return {
+      color: '#9333EA',
+      label: 'High Surplus',
+      zone: 'alert',
+    };
+  }
+
+  // 2. Overeating Caution (>= cautionThreshold) -> Normal Purple
+  if (calories >= cautionThreshold) {
+    return {
+      color: '#A855F7',
+      label: 'Overeating Caution',
+      zone: 'caution',
+    };
+  }
+
+  // 3. Undereating (< floor) -> Red
+  if (calories < floor) {
+    return {
+      color: '#EF4444',
+      label: 'Undereating',
+      zone: 'undereating',
+    };
+  }
+
+  // 4. On Target (floor <= calories < cautionThreshold) -> Green
+  return {
+    color: '#10B981',
+    label: 'On Target',
+    zone: 'target',
   };
 }
 

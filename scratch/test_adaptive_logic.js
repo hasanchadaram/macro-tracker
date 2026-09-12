@@ -15,10 +15,11 @@ const noisyLogs = [
 const trend = calculateTrendWeight(noisyLogs);
 console.log('Trend weight computed:', trend);
 
-console.log('\nTesting getCalorieSafetyFloor:');
-console.log('Female BMR 1250:', getCalorieSafetyFloor('Female', 1250)); // max(1125, 1200) = 1200
-console.log('Male BMR 1600:', getCalorieSafetyFloor('Male', 1600)); // max(1440, 1500) = 1500
-console.log('Male BMR 1800:', getCalorieSafetyFloor('Male', 1800)); // max(1620, 1500) = 1620
+console.log('\nTesting getCalorieSafetyFloor (TDEE - 500, baseFloor):');
+console.log('Female TDEE 1600:', getCalorieSafetyFloor('Female', 1600)); // max(1200, 1100) = 1200
+console.log('Female TDEE 1800:', getCalorieSafetyFloor('Female', 1800)); // max(1200, 1300) = 1300
+console.log('Male TDEE 1900:', getCalorieSafetyFloor('Male', 1900)); // max(1500, 1400) = 1500
+console.log('Male TDEE 2200:', getCalorieSafetyFloor('Male', 2200)); // max(1500, 1700) = 1700
 
 console.log('\nTesting evaluateWeeklyCheckIn for First Check-In:');
 const profile1 = {

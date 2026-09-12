@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAlert } from '@/components/ui/CustomAlert';
 import { AttentionBeacon } from '@/components/ui/AttentionBeacon';
 import * as Haptics from 'expo-haptics';
+import { getCalorieZoneColor, getCalorieSafetyFloor } from '@/lib/nutrition';
 
 import { TextInput } from 'react-native';
 
@@ -197,6 +198,9 @@ interface DailySummaryProps {
   targetFat?: number | null;
   burnedCalories?: number;
   underEatingThreshold?: number | null;
+  goal?: string | null;
+  gender?: string | null;
+  bmr?: number | null;
   isLoading?: boolean;
   date?: string;
 }
@@ -207,6 +211,9 @@ export function DailySummaryCard({
   maintenanceCalories, targetProtein, targetCarbs, targetFat,
   burnedCalories = 0,
   underEatingThreshold,
+  goal,
+  gender,
+  bmr,
   isLoading,
   date,
 }: DailySummaryProps) {
@@ -215,7 +222,8 @@ export function DailySummaryCard({
   const { showAlert } = useAlert();
 
   const tCals = targetCalories || 2000;
-  const mCals = maintenanceCalories || tCals;
+  const baseMaintenance = maintenanceCalories || tCals;
+  const effectiveTDEE = baseMaintenance + (activityCredit || 0);
   const tPro = targetProtein || 150;
   const tCarbs = targetCarbs || 250;
   const tFat = targetFat || 70;
@@ -229,21 +237,32 @@ export function DailySummaryCard({
   const macroBg = isDark ? '#0F172A' : '#F1F5F9';
   
   // ── Under-eating and Over-eating Thresholds ──────────────────
-  const isUnderEating = underEatingThreshold ? calories < underEatingThreshold : false;
-  const surplus = calories - mCals;
-  const isOverEatingCaution = surplus >= 500 && surplus <= 600;
-  const isOverEatingAlert = surplus > 600;
-  const hasAlert = isUnderEating || isOverEatingCaution || isOverEatingAlert;
+  // Rule: Calorie intake should be more than BMR, more than 1200 (female)/1500 (male), and more than TDEE - 500
+  const bmrValue = bmr && bmr > 0 ? bmr : (underEatingThreshold && underEatingThreshold > 0 ? underEatingThreshold : 0);
+  const effectiveUnderEatingThreshold = getCalorieSafetyFloor(gender, effectiveTDEE, bmrValue);
 
-  // Ring Color: Red for undereating, Dangerous Purple for overeating, Green for target
-  let ringColor = isDark ? '#34D399' : '#10B981';
-  if (isUnderEating) {
-    ringColor = '#EF4444'; // Red
-  } else if (isOverEatingAlert) {
-    ringColor = '#9333EA'; // Intense Deep Purple
-  } else if (isOverEatingCaution) {
-    ringColor = '#A855F7'; // Dangerous Electric Purple
-  }
+  // Calorie Bar & Ring Color strictly synchronized with Undereating / Overeating state:
+  // - Red (#EF4444): Undereating (calories < effectiveUnderEatingThreshold)
+  // - Green (#10B981): On Target (effectiveUnderEatingThreshold <= calories < effectiveTDEE + 400)
+  // - Normal Purple (#A855F7): Overeating Caution (effectiveTDEE + 400 <= calories <= effectiveTDEE + 500)
+  // - Intense Purple (#9333EA): High Surplus Alert (calories > effectiveTDEE + 500)
+  const zoneResult = getCalorieZoneColor(
+    calories,
+    tCals,
+    effectiveTDEE,
+    goal,
+    effectiveUnderEatingThreshold,
+    gender,
+    bmrValue
+  );
+
+  // Single Source of Truth: beacon icons and ringColor are 100% in lockstep sync
+  const surplus = calories - effectiveTDEE;
+  const isUnderEating = calories > 0 && zoneResult.zone === 'undereating';
+  const isOverEatingCaution = zoneResult.zone === 'caution';
+  const isOverEatingAlert = zoneResult.zone === 'alert';
+  const hasAlert = isUnderEating || isOverEatingCaution || isOverEatingAlert;
+  const ringColor = calories > 0 ? zoneResult.color : (isDark ? '#34D399' : '#10B981');
 
   const trackColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
 
@@ -408,27 +427,44 @@ export function DailySummaryCard({
 
 
   const handleUnderEatingPress = () => {
-    if (!underEatingThreshold) return;
-    const diff = Math.round(underEatingThreshold - calories);
+    const diff = Math.round(effectiveUnderEatingThreshold - calories);
     showAlert(
       'Eat More to Fuel Your Body!',
-      `You need ${Math.ceil(diff)} more kcal to hit your minimum requirement (${Math.round(underEatingThreshold)} kcal).\n\nEating too little causes muscle loss, severe energy drops, and metabolic adaptation. Make sure to properly fuel your body!`
+      `You need ${Math.ceil(diff)} more kcal to hit your minimum requirement (${Math.round(effectiveUnderEatingThreshold)} kcal).\n\nEating too little causes muscle loss, severe energy drops, and metabolic adaptation. Make sure to properly fuel your body!`,
+      [
+        { text: 'Got It', style: 'cancel' },
+        {
+          text: 'Why This Matters',
+          onPress: () => {
+            showAlert(
+              '⚠️ Risks of Eating Below BMR',
+              'When you consistently consume fewer calories than your BMR, your body treats it as a famine and triggers a cascade of negative side effects:\n\n' +
+              '• Metabolic Slowdown: Your body downregulates its metabolic rate to match your restricted intake, making future weight loss incredibly difficult and causing rapid weight regain when you stop.\n\n' +
+              '• Muscle Wasting: To find energy, your body begins breaking down its own lean muscle tissue and organs rather than just body fat.\n\n' +
+              '• Hormonal Crash: In women, it often causes amenorrhea (loss of menstrual period). In men, it tanks testosterone levels.\n\n' +
+              '• Physical Symptoms: Chronic fatigue, constant hair loss, feeling unusually cold all the time, and severe brain fog.'
+            );
+          },
+        },
+      ]
     );
   };
 
   const handleOverEatingCautionPress = () => {
     const diff = Math.round(surplus);
+    const exerciseText = activityCredit > 0 ? ` (including +${Math.round(activityCredit)} kcal earned from exercise today)` : '';
     showAlert(
       'Time to Slow Down!',
-      `You are currently ${diff} kcal above your daily maintenance level (${Math.round(mCals)} kcal).\n\nA moderate surplus is fine on occasion, but eating further above maintenance will lead to unwanted fat gain. Consider pacing your calorie intake for the rest of the day!`
+      `You are currently ${diff} kcal above your daily maintenance level (${Math.round(effectiveTDEE)} kcal${exerciseText}).\n\nA moderate surplus is fine on occasion, but eating further above maintenance will lead to unwanted fat gain. Consider pacing your calorie intake for the rest of the day!`
     );
   };
 
   const handleOverEatingAlertPress = () => {
     const diff = Math.round(surplus);
+    const exerciseText = activityCredit > 0 ? ` (including +${Math.round(activityCredit)} kcal earned from exercise today)` : '';
     showAlert(
       'High Calorie Surplus Alert!',
-      `You have consumed ${diff} kcal above your daily maintenance level today (${Math.round(calories)} kcal total vs ${Math.round(mCals)} kcal maintenance).\n\nA large surplus causes significant fat accumulation. If your goal is staying lean or managing weight, consider stopping further calorie consumption today and resetting fresh tomorrow!`
+      `You have consumed ${diff} kcal above your daily maintenance level today (${Math.round(calories)} kcal total vs ${Math.round(effectiveTDEE)} kcal maintenance${exerciseText}).\n\nA large surplus causes significant fat accumulation. If your goal is staying lean or managing weight, consider stopping further calorie consumption today and resetting fresh tomorrow!`
     );
   };
 
@@ -482,11 +518,11 @@ export function DailySummaryCard({
           </Pressable>
         )}
 
-        {/* Overeating High Alert Icon (Intense Purple - >600 surplus) */}
+        {/* Overeating High Alert Icon (Intense Purple - >500 surplus) */}
         {isOverEatingAlert && (
           <Pressable style={styles.infoButton} onPress={handleOverEatingAlertPress}>
-            <AttentionBeacon color="#A855F7" size={26} showHalo={false}>
-              <Ionicons name="warning" size={24} color="#A855F7" />
+            <AttentionBeacon color="#9333EA" size={26} showHalo={false}>
+              <Ionicons name="warning" size={24} color="#9333EA" />
             </AttentionBeacon>
           </Pressable>
         )}

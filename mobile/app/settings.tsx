@@ -23,6 +23,7 @@ import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import type { Profile, CheckInRecommendation } from '@/lib/types';
+import { checkForAppUpdate, openPlayStore } from '@/lib/versionUtils';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -60,7 +61,56 @@ export default function ProfileScreen() {
   const [isSavingCheckIn, setIsSavingCheckIn] = useState(false);
   const [isCheckInReadOnly, setIsCheckInReadOnly] = useState(false);
 
-  const appVersion = Constants.expoConfig?.version || '1.0.0';
+  const appVersion = Constants.expoConfig?.version || '1.1.2';
+  const appVersionCode = Constants.expoConfig?.android?.versionCode || 10;
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+
+  const handleCheckForUpdates = async () => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    await Haptics.selectionAsync();
+
+    try {
+      const result = await checkForAppUpdate();
+
+      if (!result.success) {
+        showAlert(
+          'Update Check Failed',
+          'Could not check for updates right now. Please verify your internet connection and try again.'
+        );
+        return;
+      }
+
+      if (result.hasUpdate && result.latestVersion) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const buildInfo = result.latestVersionCode ? ` (Build ${result.latestVersionCode})` : '';
+        const currentBuildInfo = result.currentVersionCode ? ` (Build ${result.currentVersionCode})` : '';
+        const notes = result.releaseNotes ? `\n\nWhat's New:\n${result.releaseNotes}` : '';
+
+        showAlert(
+          'Update Available! 🚀',
+          `A new version of Day Fuel is available!\n\n• Current: v${result.currentVersion}${currentBuildInfo}\n• Latest: v${result.latestVersion}${buildInfo}${notes}`,
+          [
+            { text: 'Later', style: 'cancel' },
+            {
+              text: 'Update from Play Store',
+              onPress: () => openPlayStore(result.playStoreUrl),
+            },
+          ]
+        );
+      } else {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        showAlert(
+          "You're Up to Date! ✨",
+          `You are running the latest version of Day Fuel (v${result.currentVersion}, Build ${result.currentVersionCode}).`
+        );
+      }
+    } catch (e: any) {
+      showAlert('Update Check Failed', e.message || 'An unexpected error occurred.');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     hydrateProfileFromCache();
@@ -311,6 +361,8 @@ export default function ProfileScreen() {
                   oldCalories: lastRecord.old_calories,
                   newCalories: lastRecord.new_calories,
                   calorieDelta: (lastRecord.new_calories || 0) - (lastRecord.old_calories || 0),
+                  oldMaintenance: Number(prof.maintenance_calories) || (Number(lastRecord.old_calories) || 2000),
+                  newMaintenance: Number(prof.maintenance_calories) || (Number(lastRecord.new_calories) || 2000),
                   oldProtein: lastRecord.old_protein,
                   newProtein: lastRecord.new_protein,
                   oldCarbs: lastRecord.old_carbs,
@@ -420,6 +472,7 @@ export default function ProfileScreen() {
 
       const updatedFields = {
         target_calories: rec.newCalories,
+        maintenance_calories: rec.newMaintenance,
         target_protein: rec.newProtein,
         target_carbs: rec.newCarbs,
         target_fat: rec.newFat,
@@ -438,7 +491,6 @@ export default function ProfileScreen() {
       }
 
       setCheckInModalVisible(false);
-      showAlert('Targets Calibrated!', `Daily targets successfully updated to ${rec.newCalories} kcal.`);
     } catch (err: any) {
       showAlert('Error', err.message);
     } finally {
@@ -491,7 +543,6 @@ export default function ProfileScreen() {
       }
 
       setCheckInModalVisible(false);
-      showAlert('Targets Preserved', 'Your current nutrition plan will remain active for the next week.');
     } catch (err: any) {
       showAlert('Error', err.message);
     } finally {
@@ -636,7 +687,7 @@ export default function ProfileScreen() {
                 onPress={() => setAvatarPickerVisible(true)}
                 style={({ pressed }) => [
                   styles.avatarWrapper,
-                  { borderColor: themeColor, opacity: pressed ? 0.85 : 1 },
+                  { opacity: pressed ? 0.85 : 1 },
                 ]}
                 accessibilityRole="button"
                 accessibilityLabel="Change profile avatar"
@@ -857,6 +908,37 @@ export default function ProfileScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color={textSecondary} />
             </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: borderColor }]} />
+
+            <Pressable 
+              style={styles.listItem}
+              onPress={handleCheckForUpdates}
+              disabled={isCheckingUpdate}
+            >
+              <View style={styles.listItemLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                  {isCheckingUpdate ? (
+                    <ActivityIndicator size="small" color="#10B981" />
+                  ) : (
+                    <Ionicons name="cloud-download-outline" size={20} color="#10B981" />
+                  )}
+                </View>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Check for Updates</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
+                    {isCheckingUpdate
+                      ? 'Checking latest release...'
+                      : `Version ${appVersion} (Build ${appVersionCode})`}
+                  </Text>
+                </View>
+              </View>
+              {isCheckingUpdate ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+              )}
+            </Pressable>
           </View>
         </View>
 
@@ -879,6 +961,37 @@ export default function ProfileScreen() {
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: borderColor }]} />
+
+            <Pressable 
+              style={styles.listItem}
+              onPress={handleCheckForUpdates}
+              disabled={isCheckingUpdate}
+            >
+              <View style={styles.listItemLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                  {isCheckingUpdate ? (
+                    <ActivityIndicator size="small" color="#10B981" />
+                  ) : (
+                    <Ionicons name="cloud-download-outline" size={20} color="#10B981" />
+                  )}
+                </View>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Check for Updates</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
+                    {isCheckingUpdate
+                      ? 'Checking latest release...'
+                      : `Version ${appVersion} (Build ${appVersionCode})`}
+                  </Text>
+                </View>
+              </View>
+              {isCheckingUpdate ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+              )}
             </Pressable>
           </View>
         </View>
@@ -936,7 +1049,7 @@ export default function ProfileScreen() {
 
         <View style={styles.versionContainer}>
           <Text style={[styles.versionText, { color: textSecondary }]}>
-            Day Fuel v{appVersion}
+            Day Fuel v{appVersion} (Build {appVersionCode})
           </Text>
         </View>
       </ScrollView>
@@ -1033,9 +1146,7 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   avatarWrapper: {
-    borderRadius: 36,
-    borderWidth: 2,
-    padding: 2,
+    borderRadius: 32,
   },
   skeletonAvatar: {
     width: 60,

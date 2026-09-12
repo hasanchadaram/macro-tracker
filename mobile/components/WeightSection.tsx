@@ -7,10 +7,11 @@ import type { WeightLog } from '@/lib/types';
 
 interface WeightSectionProps {
   latestLog: WeightLog | null;
+  isFutureDate?: boolean;
   onAddPress: () => void;
 }
 
-export function WeightSection({ latestLog, onAddPress }: WeightSectionProps) {
+export function WeightSection({ latestLog, isFutureDate = false, onAddPress }: WeightSectionProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -28,13 +29,13 @@ export function WeightSection({ latestLog, onAddPress }: WeightSectionProps) {
         onAddPress();
       }}>
         <View style={styles.headerLeft}>
-          <View style={[styles.iconWrap, { backgroundColor: activeColor + '18' }]}>
-            <Ionicons name="scale-outline" size={20} color={activeColor} />
+          <View style={[styles.iconWrap, { backgroundColor: isFutureDate ? textSecondary + '18' : activeColor + '18' }]}>
+            <Ionicons name="scale-outline" size={20} color={isFutureDate ? textSecondary : activeColor} />
           </View>
           <Text style={[styles.title, { color: textPrimary }]}>WEIGHT</Text>
         </View>
-        <View style={[styles.addButton, { backgroundColor: activeColor + '18' }]}>
-          <Ionicons name={latestLog ? "pencil" : "add"} size={latestLog ? 16 : 20} color={activeColor} />
+        <View style={[styles.addButton, { backgroundColor: isFutureDate ? textSecondary + '18' : activeColor + '18' }]}>
+          <Ionicons name={latestLog ? "pencil" : "add"} size={latestLog ? 16 : 20} color={isFutureDate ? textSecondary : activeColor} />
         </View>
       </Pressable>
 
@@ -72,10 +73,14 @@ export function WeightSection({ latestLog, onAddPress }: WeightSectionProps) {
             onAddPress();
           }}>
             <View style={styles.emptyIconWrap}>
-              <Ionicons name="scale-outline" size={24} color={textSecondary} />
+              <Ionicons name={isFutureDate ? "calendar-outline" : "scale-outline"} size={24} color={textSecondary} />
             </View>
-            <Text style={[styles.emptyText, { color: textSecondary }]}>No weight logged today.</Text>
-            <Text style={[styles.emptySubText, { color: activeColor }]}>Tap to log</Text>
+            <Text style={[styles.emptyText, { color: textSecondary }]}>
+              {isFutureDate ? "Weight cannot be logged for future dates." : "No weight logged today."}
+            </Text>
+            <Text style={[styles.emptySubText, { color: isFutureDate ? textSecondary : activeColor }]}>
+              {isFutureDate ? "Available on this day" : "Tap to log"}
+            </Text>
           </Pressable>
         )}
       </View>

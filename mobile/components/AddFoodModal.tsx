@@ -18,6 +18,7 @@ import type { RecentFood, FoodItem, MealTotals } from '@/lib/types';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { saveMealDraft, getMealDraft, clearMealDraft } from '@/lib/mealDraft';
 
 interface AddFoodModalProps {
   visible: boolean;
@@ -47,11 +48,45 @@ export function AddFoodModal({
   const [imageUri, setImageUri] = useState<string | undefined>(undefined);
   const [showTip, setShowTip] = useState(false);
 
+  const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentMealTypeRef = React.useRef(mealType);
+
+  // Sync / restore draft when modal opens or when mealType changes
   React.useEffect(() => {
-    if (visible) {
+    let isMounted = true;
+    if (visible && mealType) {
       checkTip();
+      const mealTypeChanged = currentMealTypeRef.current !== mealType;
+      currentMealTypeRef.current = mealType;
+
+      getMealDraft(mealType).then((draft) => {
+        if (!isMounted) return;
+        if (draft && (draft.description || draft.imageUri)) {
+          setDescription(draft.description || '');
+          setImageUri(draft.imageUri);
+          setImageBase64(undefined);
+          setMode('describe');
+        } else if (mealTypeChanged) {
+          setDescription('');
+          setImageUri(undefined);
+          setImageBase64(undefined);
+          setMode('options');
+        }
+      });
     }
-  }, [visible]);
+    return () => {
+      isMounted = false;
+    };
+  }, [visible, mealType]);
+
+  // Clean up debounce timer on unmount to prevent leaks
+  React.useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
 
   const checkTip = async () => {
     try {
@@ -76,12 +111,43 @@ export function AddFoodModal({
   const inputBg = isDark ? '#0F172A' : '#F8FAFC';
   const buttonBg = isDark ? '#334155' : '#F1F5F9';
 
+  const handleDescriptionChange = (text: string) => {
+    setDescription(text);
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    // 400ms debounce saves disk I/O while keeping UI 60fps fluid
+    saveTimerRef.current = setTimeout(() => {
+      saveMealDraft(mealType, { description: text, imageUri });
+    }, 400);
+  };
+
+  const updateImage = (uri?: string) => {
+    setImageUri(uri);
+    setImageBase64(undefined);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveMealDraft(mealType, { description, imageUri: uri });
+  };
+
+  const handleDiscardDraft = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    setDescription('');
+    setImageUri(undefined);
+    setImageBase64(undefined);
+    clearMealDraft(mealType);
+    setMode('options');
+  };
+
   const handleClose = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setMode('options');
-    setDescription('');
-    setImageBase64(undefined);
-    setImageUri(undefined);
+    // Flush any pending text changes immediately before closing without wiping state
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveMealDraft(mealType, { description, imageUri });
+    }
     onClose();
   };
 
@@ -92,7 +158,7 @@ export function AddFoodModal({
         [{ resize: { width: 720 } }],
         { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
       );
-      setImageUri(manipResult.uri);
+      updateImage(manipResult.uri);
     } catch (error) {
       console.error("Image processing error:", error);
       alert("Failed to process image.");
@@ -134,8 +200,14 @@ export function AddFoodModal({
 
   const handleSubmitDescribe = () => {
     if (hasContent) {
+      // Flush draft save so it's persisted during scan
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveMealDraft(mealType, { description: description.trim(), imageUri });
+      }
       onAnalyze(description.trim(), imageBase64, imageUri);
-      handleClose();
+      // Close modal to let scan loader show, but keep draft intact until meal is saved
+      onClose();
     }
   };
 
@@ -170,6 +242,40 @@ export function AddFoodModal({
 
           {mode === 'options' ? (
             <ScrollView showsVerticalScrollIndicator={false}>
+              {hasContent && (
+                <View style={[styles.draftBanner, { backgroundColor: buttonBg, borderColor }]}>
+                  <View style={styles.draftBannerLeft}>
+                    <Ionicons name="document-text-outline" size={22} color="#10B981" />
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={[styles.draftBannerTitle, { color: textPrimary }]}>
+                        Draft for {mealType}
+                      </Text>
+                      <Text style={[styles.draftBannerSub, { color: textSecondary }]} numberOfLines={1}>
+                        {description ? `"${description}"` : 'Photo attached'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.draftBannerActions}>
+                    <Pressable
+                      style={styles.resumeDraftBtn}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setMode('describe');
+                      }}
+                    >
+                      <Text style={styles.resumeDraftBtnText}>Resume</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.discardDraftIconBtn}
+                      onPress={handleDiscardDraft}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
               <View style={styles.optionsGrid}>
                 {/* Search / Describe (Text) */}
                 <Pressable
@@ -270,11 +376,11 @@ export function AddFoodModal({
           ) : (
             /* Describe Mode (Text + optional Image) */
             <View style={styles.describeContainer}>
-              <Text style={[styles.describeHint, { color: textSecondary }]}>
-                {hasImage
-                  ? 'Photo attached! You can add an optional description or analyze directly.'
-                  : 'Describe your meal, attach a photo, or both!'}
-              </Text>
+              {!hasImage && (
+                <Text style={[styles.describeHint, { color: textSecondary }]}>
+                  Describe your meal, attach a photo, or both!
+                </Text>
+              )}
               
               <View style={styles.imageActions}>
                 <Pressable
@@ -311,8 +417,7 @@ export function AddFoodModal({
                   <Pressable
                     style={styles.imageRemoveBtn}
                     onPress={() => {
-                      setImageUri(undefined);
-                      setImageBase64(undefined);
+                      updateImage(undefined);
                     }}
                     hitSlop={8}
                   >
@@ -335,7 +440,7 @@ export function AddFoodModal({
                 multiline
                 maxLength={120}
                 value={description}
-                onChangeText={setDescription}
+                onChangeText={handleDescriptionChange}
                 autoFocus={!hasImage}
               />
 
@@ -352,6 +457,16 @@ export function AddFoodModal({
                 >
                   <Text style={[styles.backButtonText, { color: textSecondary }]}>Back</Text>
                 </Pressable>
+
+                {hasContent && (
+                  <Pressable
+                    style={[styles.discardButton, { borderColor }]}
+                    onPress={handleDiscardDraft}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#EF4444" style={{ marginRight: 4 }} />
+                    <Text style={styles.discardButtonText}>Discard</Text>
+                  </Pressable>
+                )}
 
                 <Pressable
                   style={[
@@ -551,6 +666,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  discardButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  discardButtonText: {
+    color: '#EF4444',
+    fontSize: 15,
+    fontWeight: '600',
+  },
   submitButton: {
     flex: 2,
     backgroundColor: '#10B981',
@@ -566,5 +695,47 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+  },
+  draftBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  draftBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  draftBannerTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  draftBannerSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  draftBannerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  resumeDraftBtn: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  resumeDraftBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  discardDraftIconBtn: {
+    padding: 6,
   },
 });

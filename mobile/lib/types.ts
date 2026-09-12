@@ -77,6 +77,7 @@ export interface MealEntry {
   sodium: number;
   image_path: string | null;
   title?: string | null;
+  summary_date?: string | null;
   raw_input?: { foods?: FoodItem[] } | null;
   created_at: string;
   meal_food?: MealFood[];
@@ -208,6 +209,8 @@ export interface CheckInRecommendation {
   oldCalories: number;
   newCalories: number;
   calorieDelta: number;
+  oldMaintenance: number;
+  newMaintenance: number;
   oldProtein: number;
   newProtein: number;
   oldCarbs: number;
@@ -246,4 +249,16 @@ export interface CheckInRecord {
   new_fat?: number | null;
   coach_message: string;
   created_at: string;
+}
+
+/** App update metadata stored in Supabase app_updates table */
+export interface AppUpdateInfo {
+  id: string;
+  latest_version: string;
+  latest_version_code: number;
+  min_supported_version_code?: number | null;
+  release_notes?: string | null;
+  play_store_url: string;
+  is_active: boolean;
+  updated_at: string;
 }

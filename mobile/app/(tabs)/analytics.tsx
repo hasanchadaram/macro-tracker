@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Ionicons } from '@expo/vector-icons';
 import { CombinedChart } from '@/components/CombinedChart';
-import { formatWeight } from '@/lib/nutrition';
+import { formatWeight, getCalorieZoneColor } from '@/lib/nutrition';
 
 const { width } = Dimensions.get('window');
 
@@ -75,9 +75,15 @@ export default function AnalyticsScreen() {
   const [profileWeight, setProfileWeight] = useState<number | null>(null);
   const [startingWeight, setStartingWeight] = useState<number | null>(null);
   const [targetCalories, setTargetCalories] = useState(2000);
+  const [maintenanceCalories, setMaintenanceCalories] = useState(2000);
+  const [userGoal, setUserGoal] = useState<string | null>(null);
+  const [checkInDates, setCheckInDates] = useState<string[]>([]);
+  const [dailyExercises, setDailyExercises] = useState<{ date: string; burned: number }[]>([]);
   const [targetProtein, setTargetProtein] = useState(150);
   const [targetCarbs, setTargetCarbs] = useState(200);
   const [targetFat, setTargetFat] = useState(65);
+  const [userGender, setUserGender] = useState<string | null>(null);
+  const [userBmr, setUserBmr] = useState<number | null>(null);
   const [selectedDayIndex, setSelectedDayIndex] = useState<number | null>(null);
 
   const fetchAnalyticsData = useCallback(async () => {
@@ -85,15 +91,19 @@ export default function AnalyticsScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Fetch Profile (including weight_kg and starting_weight_kg)
+      // Fetch Profile (including weight_kg, starting_weight_kg, maintenance_calories, goal, gender, under_eating_threshold)
       const { data: profile } = await supabase
         .from('profiles')
-        .select('target_calories, target_protein, target_carbs, target_fat, weight_kg, starting_weight_kg')
+        .select('target_calories, maintenance_calories, goal, target_protein, target_carbs, target_fat, weight_kg, starting_weight_kg, gender, under_eating_threshold')
         .eq('id', user.id)
         .single();
       
       if (profile) {
         setTargetCalories(profile.target_calories || 2000);
+        setMaintenanceCalories(profile.maintenance_calories || profile.target_calories || 2000);
+        setUserGoal(profile.goal || null);
+        setUserGender(profile.gender || null);
+        setUserBmr(profile.under_eating_threshold ? Number(profile.under_eating_threshold) : null);
         setTargetProtein(profile.target_protein || 150);
         setTargetCarbs(profile.target_carbs || 200);
         setTargetFat(profile.target_fat || 65);
@@ -114,6 +124,32 @@ export default function AnalyticsScreen() {
         .order('summary_date', { ascending: true });
       
       setSummaries(summaryData || []);
+
+      // Fetch check-ins for vertical timeline classification
+      const { data: checkInsData } = await supabase
+        .from('check_ins')
+        .select('check_in_date')
+        .eq('user_id', user.id);
+
+      if (checkInsData) {
+        setCheckInDates(checkInsData.map(c => c.check_in_date));
+      }
+
+      // Fetch exercise logs for per-day activity credit
+      const { data: exerciseData } = await supabase
+        .from('exercises')
+        .select('exercise_date, calories_burned')
+        .eq('user_id', user.id)
+        .gte('exercise_date', thirtyDaysAgoStr);
+
+      if (exerciseData) {
+        const burnedMap: { [date: string]: number } = {};
+        for (const ex of exerciseData) {
+          const d = ex.exercise_date;
+          burnedMap[d] = (burnedMap[d] || 0) + (Number(ex.calories_burned) || 0);
+        }
+        setDailyExercises(Object.keys(burnedMap).map(date => ({ date, burned: burnedMap[date] })));
+      }
 
       // Fetch weight logs (all available to allow historical forward & backward filling)
       const { data: weightData } = await supabase
@@ -262,7 +298,7 @@ export default function AnalyticsScreen() {
         {/* Combined Line Chart */}
         <View style={[styles.card, { backgroundColor: cardBg }]}>
           <Text style={[styles.cardTitle, { color: textPrimary }]}>Progress Overview ({chartDaysCount} Days)</Text>
-          <CombinedChart data={combinedData} targetCalories={targetCalories} isDark={isDark} />
+          <CombinedChart data={combinedData} targetCalories={targetCalories} isDark={isDark} checkInDates={checkInDates} />
         </View>
 
         {/* Calories Chart */}
@@ -277,26 +313,32 @@ export default function AnalyticsScreen() {
           {/* Interactive Day Details Banner */}
           {selectedDayIndex !== null && last7Days[selectedDayIndex] && (() => {
             const selectedDay = last7Days[selectedDayIndex];
-            const isOver = selectedDay.calories > targetCalories;
+            const dayBurned = dailyExercises.find(e => e.date === selectedDay.date)?.burned || 0;
+            const dayActivityCredit = Math.round(dayBurned * 0.70);
+            const dayTarget = targetCalories + dayActivityCredit;
+            const dayMaintenance = maintenanceCalories + dayActivityCredit;
+            const zone = getCalorieZoneColor(selectedDay.calories, dayTarget, dayMaintenance, userGoal, undefined, userGender, userBmr);
+            const isCheckInDay = checkInDates.includes(selectedDay.date);
+
             const bannerBg = isDark 
-              ? (isOver ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)')
-              : (isOver ? '#FEF2F2' : '#ECFDF5');
+              ? `${zone.color}25`
+              : `${zone.color}15`;
             const bannerBorder = isDark 
-              ? (isOver ? 'rgba(239, 68, 68, 0.35)' : 'rgba(16, 185, 129, 0.35)')
-              : (isOver ? '#FECACA' : '#A7F3D0');
-            const iconColor = isOver ? '#EF4444' : '#10B981';
-            const textColor = isDark 
-              ? (isOver ? '#FCA5A5' : '#A7F3D0') 
-              : (isOver ? '#991B1B' : '#065F46');
+              ? `${zone.color}55`
+              : `${zone.color}40`;
+            const iconName = zone.zone === 'target' 
+              ? 'checkmark-circle-outline' 
+              : zone.zone === 'undereating' 
+                ? 'alert-circle-outline' 
+                : 'warning-outline';
 
             return (
               <View style={[styles.selectedDayBadge, { backgroundColor: bannerBg, borderColor: bannerBorder }]}>
-                <Ionicons name={isOver ? "alert-circle-outline" : "checkmark-circle-outline"} size={14} color={iconColor} />
-                <Text style={[styles.selectedDayText, { color: textColor }]}>
-                  {selectedDay.fullDateLabel}: {Math.round(selectedDay.calories)} kcal
-                  {selectedDay.calories > targetCalories
-                    ? ` (${Math.round(selectedDay.calories - targetCalories)} kcal over target)`
-                    : ` (${Math.round(targetCalories - selectedDay.calories)} kcal under target)`}
+                <Ionicons name={iconName} size={14} color={zone.color} />
+                <Text style={[styles.selectedDayText, { color: zone.color }]}>
+                  {selectedDay.fullDateLabel}: {Math.round(selectedDay.calories)} kcal • {zone.label}
+                  {dayActivityCredit > 0 ? ` (+${dayActivityCredit} bonus)` : ''}
+                  {isCheckInDay ? ' • 🎯 Check-In Day' : ''}
                 </Text>
               </View>
             );
@@ -307,14 +349,19 @@ export default function AnalyticsScreen() {
             <View style={styles.calNumbersRow}>
               {last7Days.map((day, i) => {
                 const isSelected = selectedDayIndex === i;
-                const isOver = day.calories > targetCalories;
+                const dayBurned = dailyExercises.find(e => e.date === day.date)?.burned || 0;
+                const dayActivityCredit = Math.round(dayBurned * 0.70);
+                const dayTarget = targetCalories + dayActivityCredit;
+                const dayMaintenance = maintenanceCalories + dayActivityCredit;
+                const zone = getCalorieZoneColor(day.calories, dayTarget, dayMaintenance, userGoal, undefined, userGender, userBmr);
+
                 return (
                   <View key={`cal-${i}`} style={styles.barCol}>
                     <Text 
                       numberOfLines={1}
                       style={[
                         styles.barCalLabel, 
-                        { color: isSelected ? (isOver ? '#EF4444' : '#10B981') : textSecondary }
+                        { color: isSelected ? zone.color : textSecondary }
                       ]}
                     >
                       {day.calories > 0 ? Math.round(day.calories) : ''}
@@ -339,8 +386,13 @@ export default function AnalyticsScreen() {
 
               {/* 7 Bars */}
               {last7Days.map((day, i) => {
-                const isOver = day.calories > targetCalories;
                 const isSelected = selectedDayIndex === i;
+                const isCheckInDay = checkInDates.includes(day.date);
+                const dayBurned = dailyExercises.find(e => e.date === day.date)?.burned || 0;
+                const dayActivityCredit = Math.round(dayBurned * 0.70);
+                const dayTarget = targetCalories + dayActivityCredit;
+                const dayMaintenance = maintenanceCalories + dayActivityCredit;
+                const zone = getCalorieZoneColor(day.calories, dayTarget, dayMaintenance, userGoal, undefined, userGender, userBmr);
                 const fillHeight = Math.max(0, Math.min(140, Math.round((day.calories / maxCal) * 140)));
 
                 return (
@@ -349,13 +401,30 @@ export default function AnalyticsScreen() {
                     style={styles.barCol}
                     onPress={() => setSelectedDayIndex(isSelected ? null : i)}
                   >
+                    {/* Check-In Subtle Vertical Line behind bar */}
+                    {isCheckInDay && (
+                      <View
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          bottom: 0,
+                          left: '50%',
+                          width: 1,
+                          borderLeftWidth: 1,
+                          borderColor: isDark ? 'rgba(99, 102, 241, 0.5)' : 'rgba(99, 102, 241, 0.45)',
+                          borderStyle: 'dashed',
+                          zIndex: 0,
+                        }}
+                      />
+                    )}
+
                     <View style={[styles.barTrack, { height: 140 }]}>
                       <View 
                         style={[
                           styles.barFill, 
                           { 
                             height: fillHeight, 
-                            backgroundColor: isOver ? '#EF4444' : '#10B981' 
+                            backgroundColor: day.calories > 0 ? zone.color : 'transparent',
                           }
                         ]} 
                       />
@@ -366,7 +435,7 @@ export default function AnalyticsScreen() {
                             {
                               borderRadius: 6,
                               borderWidth: 2,
-                              borderColor: isOver ? '#EF4444' : '#10B981',
+                              borderColor: zone.color,
                               backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
                             }
                           ]}
@@ -383,6 +452,7 @@ export default function AnalyticsScreen() {
             <View style={styles.dayLabelsRow}>
               {last7Days.map((day, i) => {
                 const isSelected = selectedDayIndex === i;
+                const isCheckInDay = checkInDates.includes(day.date);
                 return (
                   <Pressable 
                     key={`label-${i}`} 
@@ -397,8 +467,8 @@ export default function AnalyticsScreen() {
                       style={[
                         styles.barLabel, 
                         { 
-                          color: day.isToday ? '#10B981' : (isSelected ? '#10B981' : textPrimary),
-                          fontWeight: (day.isToday || isSelected) ? '700' : '600',
+                          color: isCheckInDay ? '#6366F1' : (day.isToday ? '#10B981' : (isSelected ? '#10B981' : textPrimary)),
+                          fontWeight: (day.isToday || isSelected || isCheckInDay) ? '700' : '600',
                         }
                       ]}
                     >
@@ -411,17 +481,27 @@ export default function AnalyticsScreen() {
           </View>
           <View style={styles.chartLegend}>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
-              <Text style={[styles.legendText, { color: textSecondary }]}>Under Goal</Text>
-            </View>
-            <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: '#EF4444' }]} />
-              <Text style={[styles.legendText, { color: textSecondary }]}>Over Goal</Text>
+              <Text style={[styles.legendText, { color: textSecondary }]}>Under</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendLine, { backgroundColor: textSecondary }]} />
-              <Text style={[styles.legendText, { color: textSecondary }]}>Target ({Math.round(targetCalories)})</Text>
+              <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+              <Text style={[styles.legendText, { color: textSecondary }]}>On Target</Text>
             </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#A855F7' }]} />
+              <Text style={[styles.legendText, { color: textSecondary }]}>Caution</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#9333EA' }]} />
+              <Text style={[styles.legendText, { color: textSecondary }]}>Overeating</Text>
+            </View>
+            {checkInDates.length > 0 && (
+              <View style={styles.legendItem}>
+                <View style={{ width: 10, height: 1, borderTopWidth: 1, borderColor: '#6366F1', borderStyle: 'dashed' }} />
+                <Text style={[styles.legendText, { color: textSecondary }]}>Check-In</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -499,6 +579,29 @@ export default function AnalyticsScreen() {
                   style={styles.weightChartArea}
                   onLayout={(e) => setWeightTrendWidth(e.nativeEvent.layout.width)}
                 >
+                  {/* Check-In Vertical Lines */}
+                  {checkInDates.length > 0 && sortedWeightLogs.map((log, i) => {
+                    const logDate = log.log_date || (log.recorded_at ? log.recorded_at.split('T')[0] : '');
+                    if (!checkInDates.includes(logDate)) return null;
+                    const x = getTrendX(i);
+                    return (
+                      <View
+                        key={`weight-checkin-${log.id}`}
+                        style={{
+                          position: 'absolute',
+                          left: x,
+                          top: 0,
+                          bottom: 0,
+                          width: 1,
+                          borderLeftWidth: 1,
+                          borderColor: isDark ? 'rgba(99, 102, 241, 0.45)' : 'rgba(99, 102, 241, 0.4)',
+                          borderStyle: 'dashed',
+                          zIndex: 1,
+                        }}
+                      />
+                    );
+                  })}
+
                   {/* Connecting Line Segments */}
                   {sortedWeightLogs.map((log, i) => {
                     if (i >= sortedWeightLogs.length - 1) return null;
@@ -748,8 +851,9 @@ const styles = StyleSheet.create({
   chartLegend: {
     flexDirection: 'row',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     marginTop: 16,
-    gap: 16,
+    gap: 12,
   },
   legendItem: {
     flexDirection: 'row',

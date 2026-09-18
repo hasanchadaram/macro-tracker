@@ -262,3 +262,65 @@ export interface AppUpdateInfo {
   is_active: boolean;
   updated_at: string;
 }
+
+// =============================================================================
+// Food Library Types
+// =============================================================================
+
+/** Nutrition facts per 100g — the standard unit for all food storage */
+export interface NutritionPer100g {
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g?: number;
+  sodium_mg?: number;
+}
+
+/** One ingredient inside a compound user food */
+export interface FoodIngredient {
+  food_id: string;             // UUID in global_foods or user_foods
+  food_table: 'global' | 'user';
+  name: string;                // denormalized for display (e.g. "Toor Dal")
+  amount_g: number;            // amount in the recipe's reference weight
+}
+
+/** A food item from the global catalog (Day Fuel curated, USDA-seeded) */
+export interface GlobalFood {
+  id: string;
+  name: string;
+  name_aliases?: string[];
+  category?: string;
+  per_100g: NutritionPer100g;
+  is_verified: boolean;
+  source: string;              // 'usda' | 'openfoodfacts' | 'admin'
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** A personal food item from the user's library */
+export interface UserFood {
+  id: string;
+  user_id: string;
+  name: string;
+  emoji?: string | null;
+  notes?: string | null;
+  // Provenance
+  source: 'manual' | 'photo' | 'describe' | 'derived';
+  derived_from_global?: string | null;   // global_foods.id
+  derived_from_user?: string | null;     // user_foods.id
+  // Serving
+  default_serving_g?: number | null;
+  default_serving_label?: string | null;
+  // Nutrition
+  per_100g: NutritionPer100g;           // always present
+  ingredients?: FoodIngredient[] | null; // null for simple, populated for compound
+  // AI
+  ai_estimated?: boolean;
+  ai_confidence?: number | null;
+  // Usage
+  use_count: number;
+  last_used_at?: string | null;
+  created_at: string;
+  updated_at?: string;
+}

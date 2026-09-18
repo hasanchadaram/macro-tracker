@@ -1185,7 +1185,7 @@ export default function HomeScreen() {
   };
 
   // Step 1: Call Gemini (with Binary Upload, Idempotency Key & Real-Time Upload Progress)
-  const handleAnalyze = async (text?: string, imageBase64?: string, imageUri?: string) => {
+  const handleAnalyze = async (text?: string, imageBase64?: string, imageUri?: string, taggedFoods?: any[]) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     setScanningType('meal');
     setHasImage(!!imageUri || !!imageBase64);
@@ -1199,6 +1199,7 @@ export default function HomeScreen() {
         imageBase64,
         mealType: activeMealType,
         idempotencyKey,
+        taggedFoods,
         onUploadComplete: () => {
           setIsUploaded(true);
         },

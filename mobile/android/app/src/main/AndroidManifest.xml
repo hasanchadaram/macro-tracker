@@ -28,7 +28,7 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="dayfuel"/>
-        <data android:scheme="exp+dayfuel"/>
+        <data android:scheme="exp+macro-tracker"/>
       </intent-filter>
       <intent-filter>
         <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"/>

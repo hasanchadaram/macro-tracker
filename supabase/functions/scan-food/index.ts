@@ -201,6 +201,7 @@ Identify:
 
 Nutrition values must be numeric and represent the entire meal.
 If the exact quantity is unclear, make a reasonable estimate.
+If the user's text references a food with '@' (e.g. '@Amma Dal', '@My Oats'), recognize this as the user's personal recipe/food and incorporate it accurately.
 Do not invent foods that are not reasonably identifiable from the input.
 For confidence, provide a value between 0 and 1.
 `;
@@ -240,6 +241,117 @@ const macroSchema = {
   },
   required: ["title", "meal_name", "foods", "totals", "confidence"]
 };
+
+interface TaggedFoodInput {
+  id?: string;
+  name: string;
+  per_100g: {
+    calories: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+  };
+  default_serving_g?: number | null;
+  default_serving_label?: string | null;
+}
+
+interface ProcessedTaggedFood {
+  name: string;
+  quantity: number;
+  unit: string;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+}
+
+function processTaggedFoods(
+  rawText: string,
+  taggedFoods: TaggedFoodInput[]
+): {
+  calculatedItems: ProcessedTaggedFood[];
+  remainingText: string;
+} {
+  if (!rawText || !Array.isArray(taggedFoods) || taggedFoods.length === 0) {
+    return { calculatedItems: [], remainingText: rawText || '' };
+  }
+
+  let textWorking = rawText;
+  const calculatedItems: ProcessedTaggedFood[] = [];
+
+  for (const food of taggedFoods) {
+    if (!food || !food.name) continue;
+    const escaped = food.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Matches e.g. "2 @Medium Egg", "150g @Medium Egg", "@Medium Egg x2", "@Medium Egg 100g", or "@Medium Egg"
+    const regex = new RegExp(
+      `(?:([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?\\s+)?@${escaped}(?:\\s*(?:x|\\*|for)?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?)?`,
+      'i'
+    );
+
+    const match = textWorking.match(regex);
+    if (!match) continue;
+
+    const qtyStr = match[1] || match[3];
+    const unitStr = (match[2] || match[4] || '').toLowerCase();
+
+    let num = 1;
+    if (qtyStr) {
+      const parsedNum = parseFloat(qtyStr);
+      if (!isNaN(parsedNum) && parsedNum > 0) {
+        num = parsedNum;
+      }
+    }
+
+    let isGramUnit = false;
+    let unitLabel = food.default_serving_label || 'serving';
+
+    if (unitStr.startsWith('g') || unitStr === 'gram' || unitStr === 'grams') {
+      isGramUnit = true;
+      unitLabel = 'g';
+    } else if (unitStr === 'ml' || unitStr === 'milliliters') {
+      isGramUnit = true;
+      unitLabel = 'ml';
+    } else if (unitStr) {
+      unitLabel = unitStr;
+    }
+
+    let totalGrams = 100;
+    if (isGramUnit) {
+      totalGrams = num;
+    } else {
+      const servingG = Number(food.default_serving_g) || 100;
+      totalGrams = num * servingG;
+    }
+
+    const ratio = totalGrams / 100;
+    const calories = Math.round((Number(food.per_100g?.calories) || 0) * ratio);
+    const protein_g = Math.round(((Number(food.per_100g?.protein_g) || 0) * ratio) * 10) / 10;
+    const carbs_g = Math.round(((Number(food.per_100g?.carbs_g) || 0) * ratio) * 10) / 10;
+    const fat_g = Math.round(((Number(food.per_100g?.fat_g) || 0) * ratio) * 10) / 10;
+
+    calculatedItems.push({
+      name: food.name,
+      quantity: Math.round(num * 10) / 10,
+      unit: unitLabel,
+      calories,
+      protein_g,
+      carbs_g,
+      fat_g,
+    });
+
+    // Remove the matched portion from working text
+    textWorking = textWorking.replace(match[0], ' ');
+  }
+
+  // Clean remaining text of leftover connectors
+  const cleaned = textWorking
+    .replace(/\b(and|with|\+|,)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { calculatedItems, remainingText: cleaned };
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -300,11 +412,18 @@ Deno.serve(async (req) => {
     let text: string | undefined;
     let image_base64: string | undefined;
     let idempotencyId: string | null = req.headers.get('x-idempotency-key');
+    let tagged_foods: TaggedFoodInput[] = [];
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
       text = (formData.get("text") as string) || undefined;
       idempotencyId = idempotencyId || (formData.get("idempotency_key") as string) || null;
+      const rawTagged = formData.get("tagged_foods") as string | null;
+      if (rawTagged) {
+        try {
+          tagged_foods = JSON.parse(rawTagged);
+        } catch {}
+      }
       const imageFile = formData.get("image") as File | null;
       if (imageFile) {
         const arrayBuffer = await imageFile.arrayBuffer();
@@ -323,6 +442,7 @@ Deno.serve(async (req) => {
       text = body.text;
       image_base64 = body.image_base64;
       idempotencyId = idempotencyId || body.idempotency_key || null;
+      tagged_foods = Array.isArray(body.tagged_foods) ? body.tagged_foods : [];
     }
 
     if (!text && !image_base64) {
@@ -332,13 +452,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (text && text.trim().length > 150) {
+    if (text && text.trim().length > 160) {
       return new Response(
-        JSON.stringify({ error: 'Meal description is too long (maximum 150 characters)' }),
+        JSON.stringify({ error: 'Meal description is too long (maximum 160 characters)' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
     tParse = Math.round(performance.now() - tParseStart);
+
+    // ── Process Tagged Personal Foods & Determine Fast-Path ───────────
+    const { calculatedItems, remainingText } = processTaggedFoods(text || '', tagged_foods);
+    const hasSubstantiveRemainingText = remainingText.length > 0 && /[a-zA-Z0-9]/.test(remainingText);
+    const hasImage = !!image_base64;
+    const isFastPath = calculatedItems.length > 0 && !hasSubstantiveRemainingText && !hasImage;
 
     const ip = req.headers.get('x-forwarded-for') || req.headers.get('cf-connecting-ip') || 'unknown-ip';
     const identifier = `${user.id}:${ip}`;
@@ -359,16 +485,78 @@ Deno.serve(async (req) => {
               status: 200, 
               headers: { 
                 ...corsHeaders, 
-                'Content-Type': 'application/json', 
+                'Content-Type': 'application/json',
+                'Server-Timing': `auth;dur=${tAuth}, cache;dur=${tCache}, total;dur=${tTotal}`,
                 'X-Cache': 'HIT',
-                'Server-Timing': `cache;dur=${tCache}, total;dur=${tTotal}`
               } 
             }
           );
         }
       } catch (cacheErr) {
-        console.warn("scan-food: Idempotency cache lookup failed:", cacheErr);
+        console.warn("scan-food: Redis idempotency read failed:", cacheErr);
       }
+    }
+    tCache = Math.round(performance.now() - tCacheStart);
+
+    // ── FAST PATH: Pure Tagged Foods (Zero Gemini Tokens, 0ms AI time) ─
+    if (isFastPath) {
+      const totalCals = calculatedItems.reduce((s, i) => s + i.calories, 0);
+      const totalP = Math.round(calculatedItems.reduce((s, i) => s + i.protein_g, 0) * 10) / 10;
+      const totalC = Math.round(calculatedItems.reduce((s, i) => s + i.carbs_g, 0) * 10) / 10;
+      const totalF = Math.round(calculatedItems.reduce((s, i) => s + i.fat_g, 0) * 10) / 10;
+      const title = calculatedItems.length === 1 ? calculatedItems[0].name : `${calculatedItems[0].name} & more`;
+
+      const fastResponse = {
+        title,
+        meal_name: title,
+        foods: calculatedItems,
+        totals: {
+          calories: totalCals,
+          protein_g: totalP,
+          carbs_g: totalC,
+          fat_g: totalF,
+        },
+        confidence: 1.0,
+      };
+
+      if (idempotencyId && redis) {
+        try {
+          await redis.set(
+            `idempotent:scan-food:${user.id}:${idempotencyId}`,
+            JSON.stringify(fastResponse),
+            { ex: 600 }
+          );
+        } catch (cacheSetErr) {
+          console.warn("scan-food: Failed to cache idempotency fast-path response:", cacheSetErr);
+        }
+      }
+
+      const tTotal = Math.round(performance.now() - t0);
+      console.log(`[scan-food] [FAST PATH] Skipped Gemini for tagged foods (${calculatedItems.map(i => i.name).join(', ')}) | Total: ${tTotal}ms`);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: fastResponse,
+          fast_path: true,
+          timings: {
+            total_ms: tTotal,
+            gemini_ms: 0,
+            upload_parse_ms: tParse,
+            db_ms: 0,
+            redis_ms: 0,
+            auth_ms: tAuth,
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Server-Timing': `auth;dur=${tAuth}, parse;dur=${tParse}, total;dur=${tTotal}`,
+          },
+        }
+      );
     }
     tCache = Math.round(performance.now() - tCacheStart);
 
@@ -572,8 +760,9 @@ Deno.serve(async (req) => {
 
     const parts: any[] = [{ text: geminiPrompt }];
 
-    if (text) {
-      parts.push({ text: `User description: ${text}` });
+    const textToAnalyze = calculatedItems.length > 0 ? remainingText : (text || '');
+    if (textToAnalyze && textToAnalyze.trim().length > 0) {
+      parts.push({ text: `User description: ${textToAnalyze.trim()}` });
     }
 
     if (image_base64) {
@@ -660,6 +849,23 @@ Deno.serve(async (req) => {
       await geminiBreaker.recordFailure(502, "Invalid JSON in response");
       throw new Error("Gemini response was not valid JSON");
     }
+
+    // Merge exact calculated tagged foods into Gemini output
+    if (calculatedItems.length > 0) {
+      const combinedFoods = [...calculatedItems, ...(parsedResponse.foods || [])];
+      const combinedTotals = {
+        calories: (parsedResponse.totals?.calories || 0) + calculatedItems.reduce((s, i) => s + i.calories, 0),
+        protein_g: Math.round(((parsedResponse.totals?.protein_g || 0) + calculatedItems.reduce((s, i) => s + i.protein_g, 0)) * 10) / 10,
+        carbs_g: Math.round(((parsedResponse.totals?.carbs_g || 0) + calculatedItems.reduce((s, i) => s + i.carbs_g, 0)) * 10) / 10,
+        fat_g: Math.round(((parsedResponse.totals?.fat_g || 0) + calculatedItems.reduce((s, i) => s + i.fat_g, 0)) * 10) / 10,
+      };
+      parsedResponse.foods = combinedFoods;
+      parsedResponse.totals = combinedTotals;
+      if (!parsedResponse.title || parsedResponse.title === 'Meal' || parsedResponse.title === 'Unknown') {
+        parsedResponse.title = `${calculatedItems[0].name} & more`;
+      }
+    }
+
     tGemini = Math.round(performance.now() - tGeminiStart);
 
     // Call succeeded -> reset circuit breaker

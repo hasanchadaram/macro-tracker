@@ -43,7 +43,9 @@ function RootContent() {
   const { showAlert } = useAlert();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [signingIn, setSigningIn] = useState<boolean>(false);
+  const [signingInEmail, setSigningInEmail] = useState<boolean>(false);
+  const [signingInGoogle, setSigningInGoogle] = useState<boolean>(false);
+  const isSigningIn = signingInEmail || signingInGoogle;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -88,7 +90,7 @@ function RootContent() {
   // Sign in with Google via Supabase OAuth (opens browser)
   const signInWithGoogle = async () => {
     try {
-      setSigningIn(true);
+      setSigningInGoogle(true);
 
       const redirectTo = makeRedirectUri({
         scheme: "dayfuel",
@@ -123,7 +125,7 @@ function RootContent() {
         error.message || "An error occurred during Google Sign-In.",
       );
     } finally {
-      setSigningIn(false);
+      setSigningInGoogle(false);
     }
   };
 
@@ -134,7 +136,7 @@ function RootContent() {
       return;
     }
     try {
-      setSigningIn(true);
+      setSigningInEmail(true);
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -144,7 +146,7 @@ function RootContent() {
     } catch (error: any) {
       showAlert("Authentication Error", error.message);
     } finally {
-      setSigningIn(false);
+      setSigningInEmail(false);
     }
   };
 
@@ -243,12 +245,16 @@ function RootContent() {
             style={({ pressed }) => [
               styles.emailButton,
               pressed && styles.buttonPressed,
-              signingIn && styles.buttonDisabled,
+              isSigningIn && styles.buttonDisabled,
             ]}
             onPress={signInWithEmail}
-            disabled={signingIn}
+            disabled={isSigningIn}
           >
-            <Text style={styles.emailButtonText}>Sign in</Text>
+            {signingInEmail ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.emailButtonText}>Sign in</Text>
+            )}
           </Pressable>
 
           <View style={styles.dividerContainer}>
@@ -261,12 +267,12 @@ function RootContent() {
             style={({ pressed }) => [
               styles.googleButton,
               pressed && styles.buttonPressed,
-              signingIn && styles.buttonDisabled,
+              isSigningIn && styles.buttonDisabled,
             ]}
             onPress={signInWithGoogle}
-            disabled={signingIn}
+            disabled={isSigningIn}
           >
-            {signingIn ? (
+            {signingInGoogle ? (
               <ActivityIndicator color="#0F172A" />
             ) : (
               <>
@@ -299,6 +305,7 @@ function RootContent() {
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="settings" options={{ headerShown: false }} />
+          <Stack.Screen name="my-foods" options={{ headerShown: false }} />
           <Stack.Screen
             name="modal"
             options={{ presentation: "modal", title: "Modal" }}

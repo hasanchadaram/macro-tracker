@@ -10,22 +10,27 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
+  ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import type { RecentFood, FoodItem, MealTotals } from '@/lib/types';
+import type { RecentFood, FoodItem, MealTotals, UserFood, GlobalFood } from '@/lib/types';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { saveMealDraft, getMealDraft, clearMealDraft } from '@/lib/mealDraft';
+import { useMyFoods } from '@/hooks/useMyFoods';
+import { MyFoodPickerSheet } from '@/components/MyFoodPickerSheet';
+import { CreateFoodModal } from '@/components/CreateFoodModal';
 
 interface AddFoodModalProps {
   visible: boolean;
   mealType: string;
   recentFoods: RecentFood[];
   onClose: () => void;
-  onAnalyze: (text?: string, imageBase64?: string, imageUri?: string) => void;
+  onAnalyze: (text?: string, imageBase64?: string, imageUri?: string, taggedFoods?: any[]) => void;
   onQuickAdd: (mealName: string, foods: FoodItem[], totals: MealTotals) => void;
   onRepeatYesterday: () => void;
 }
@@ -47,15 +52,181 @@ export function AddFoodModal({
   const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
   const [imageUri, setImageUri] = useState<string | undefined>(undefined);
   const [showTip, setShowTip] = useState(false);
+  const [showFormatHint, setShowFormatHint] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerInitialFood, setPickerInitialFood] = useState<UserFood | null>(null);
+  const [showCreateFood, setShowCreateFood] = useState(false);
+  const [dismissedMentionIndex, setDismissedMentionIndex] = useState<number | null>(null);
+
+  // Personal food library hook
+  const { myFoods, topFoods, createFood, searchGlobalFoods, refreshFoods } = useMyFoods();
+
+  // Identify all active registered personal foods present in current description
+  // If the user modifies even a single character of @FoodName, it automatically unregisters
+  const registeredFoods = React.useMemo(() => {
+    if (!description || !description.includes('@')) return [];
+    return myFoods.filter((f) => {
+      const tag = `@${f.name.toLowerCase()}`;
+      return description.toLowerCase().includes(tag);
+    });
+  }, [description, myFoods]);
+
+  // Detect active @mention query anywhere at current end of text, gracefully ignoring already registered @food tags
+  const getActiveMentionInfo = (
+    text: string,
+    activeFoods: UserFood[]
+  ): { query: string; rawQuery: string; startIndex: number } | null => {
+    const lastAtIndex = text.lastIndexOf('@');
+    if (lastAtIndex === -1) return null;
+
+    // If user explicitly dismissed suggestions for this specific '@', don't show it
+    if (dismissedMentionIndex === lastAtIndex) return null;
+
+    const textFromAt = text.slice(lastAtIndex);
+
+    // If the text from this '@' starts with any already-registered food name, it's completed!
+    const isCompleted = activeFoods.some((food) => {
+      const tag = `@${food.name.toLowerCase()}`;
+      const lowerFromAt = textFromAt.toLowerCase();
+      return (
+        lowerFromAt === tag ||
+        lowerFromAt.startsWith(`${tag} `) ||
+        lowerFromAt.startsWith(`${tag},`) ||
+        lowerFromAt.startsWith(`${tag}.`)
+      );
+    });
+
+    if (isCompleted) return null;
+
+    const queryPart = textFromAt.slice(1); // string after '@'
+
+    // If query has newline, sentence-ending punctuation, or is longer than 30 chars, don't show mention suggestions
+    if (queryPart.includes('\n') || /[.!?]/.test(queryPart) || queryPart.length > 30) {
+      return null;
+    }
+
+    // If query contains a space and no personal foods match or start with the query, dismiss it
+    if (queryPart.includes(' ')) {
+      const qTrim = queryPart.trim().toLowerCase();
+      const hasMatch = myFoods.some((f) => {
+        const name = f.name.toLowerCase();
+        return name.startsWith(qTrim) || name.includes(qTrim);
+      });
+      if (!hasMatch) return null;
+    }
+
+    return {
+      query: queryPart.trim().toLowerCase(),
+      rawQuery: queryPart,
+      startIndex: lastAtIndex,
+    };
+  };
+
+  const mentionInfo = mode === 'describe' ? getActiveMentionInfo(description, registeredFoods) : null;
+
+  // Personal foods only with smart plural/singular stemming & prefix matching
+  const userMentionSuggestions = mentionInfo !== null
+    ? myFoods.filter((f) => {
+        if (!mentionInfo.query) return true;
+        const q = mentionInfo.query.toLowerCase().trim();
+        const name = f.name.toLowerCase();
+        if (name.includes(q)) return true;
+        // Plural/singular normalization (e.g. 'eggs' -> 'egg', 'berries' -> 'berry', 'tomatoes' -> 'tomato')
+        const stem = q.endsWith('ies')
+          ? q.slice(0, -3) + 'y'
+          : q.endsWith('es')
+          ? q.slice(0, -2)
+          : q.endsWith('s')
+          ? q.slice(0, -1)
+          : q;
+        if (stem && name.includes(stem)) return true;
+        const words = name.split(/[\s,.-]+/);
+        return words.some((w) => w.startsWith(q) || (stem && w.startsWith(stem)));
+      }).slice(0, 8)
+    : [];
+
+  const handleSelectMention = (food: UserFood) => {
+    Haptics.selectionAsync();
+    if (!mentionInfo) return;
+    const beforeAt = description.slice(0, mentionInfo.startIndex);
+    const queryLen = mentionInfo.rawQuery ? mentionInfo.rawQuery.length : 0;
+    const afterQuery = description.slice(mentionInfo.startIndex + 1 + queryLen);
+    const updated = `${beforeAt}@${food.name} ${afterQuery.trimStart()}`;
+    handleDescriptionChange(updated);
+  };
+
+  // Helper to render formatted text with registered @FoodName tags highlighted in emerald green
+  const renderFormattedDescription = (
+    text: string,
+    activeFoods: UserFood[],
+    primaryColor: string,
+  ) => {
+    if (!text) return null;
+    if (activeFoods.length === 0) {
+      return <Text style={{ color: primaryColor }}>{text}</Text>;
+    }
+
+    const escapedTags = activeFoods
+      .map((f) => `@${f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      .join('|');
+    const regex = new RegExp(`(${escapedTags})`, 'i');
+
+    const parts = text.split(regex);
+    return parts.map((part, index) => {
+      const isRegistered = activeFoods.some(
+        (f) => part.toLowerCase() === `@${f.name.toLowerCase()}`
+      );
+      if (isRegistered) {
+        return (
+          <Text
+            key={index}
+            style={{
+              color: '#10B981',
+              fontWeight: '700',
+            }}
+          >
+            {part}
+          </Text>
+        );
+      }
+      return (
+        <Text key={index} style={{ color: primaryColor }}>
+          {part}
+        </Text>
+      );
+    });
+  };
 
   const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentMealTypeRef = React.useRef(mealType);
+  const describeScrollRef = React.useRef<ScrollView>(null);
 
-  // Sync / restore draft when modal opens or when mealType changes
+  // Auto-scroll describe mode to bottom so input and Analyze button are always visible above keyboard
+  React.useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        if (mode === 'describe') {
+          setTimeout(() => {
+            describeScrollRef.current?.scrollToEnd({ animated: true });
+          }, 80);
+        }
+      }
+    );
+    return () => {
+      showSub.remove();
+    };
+  }, [mode]);
+
+  // Sync / restore draft and refresh foods whenever modal opens or mealType changes
   React.useEffect(() => {
     let isMounted = true;
+    if (visible) {
+      refreshFoods();
+    }
     if (visible && mealType) {
       checkTip();
+      checkFormatHint();
       const mealTypeChanged = currentMealTypeRef.current !== mealType;
       currentMealTypeRef.current = mealType;
 
@@ -77,7 +248,7 @@ export function AddFoodModal({
     return () => {
       isMounted = false;
     };
-  }, [visible, mealType]);
+  }, [visible, mealType, refreshFoods]);
 
   // Clean up debounce timer on unmount to prevent leaks
   React.useEffect(() => {
@@ -101,6 +272,22 @@ export function AddFoodModal({
     setShowTip(false);
     try {
       await AsyncStorage.setItem('has_seen_add_food_tip', 'true');
+    } catch (e) {}
+  };
+
+  const checkFormatHint = async () => {
+    try {
+      const hasSeen = await AsyncStorage.getItem('has_seen_format_hint');
+      if (!hasSeen) {
+        setShowFormatHint(true);
+      }
+    } catch (e) {}
+  };
+
+  const dismissFormatHint = async () => {
+    setShowFormatHint(false);
+    try {
+      await AsyncStorage.setItem('has_seen_format_hint', 'true');
     } catch (e) {}
   };
 
@@ -205,18 +392,21 @@ export function AddFoodModal({
         clearTimeout(saveTimerRef.current);
         saveMealDraft(mealType, { description: description.trim(), imageUri });
       }
-      onAnalyze(description.trim(), imageBase64, imageUri);
+      onAnalyze(description.trim(), imageBase64, imageUri, registeredFoods);
       // Close modal to let scan loader show, but keep draft intact until meal is saved
       onClose();
     }
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
+    <>
+      <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
         style={styles.overlay}
       >
+        <Pressable style={styles.topSpacer} onPress={handleClose} />
         <View style={[styles.modalContent, { backgroundColor: cardBg }]}>
           {/* Header */}
           <View style={styles.header}>
@@ -226,7 +416,7 @@ export function AddFoodModal({
             </Pressable>
           </View>
 
-          {showTip && (
+          {mode === 'options' && showTip && (
             <View style={[styles.tipBox, { backgroundColor: 'rgba(59, 130, 246, 0.1)' }]}>
               <Ionicons name="information-circle" size={24} color="#3B82F6" style={{ marginTop: 2 }} />
               <View style={{ flex: 1, marginLeft: 12 }}>
@@ -299,6 +489,78 @@ export function AddFoodModal({
                   <Text style={[styles.optionTitle, { color: textPrimary }]}>Scan meal</Text>
                   <Text style={[styles.optionSub, { color: textSecondary }]}>Use camera</Text>
                 </Pressable>
+              </View>
+
+              {/* My Foods Library Section */}
+              <View style={[styles.myFoodsSection, { borderColor }]}>
+                <View style={styles.myFoodsHeader}>
+                  <View style={styles.myFoodsHeaderLeft}>
+                    <Ionicons name="book-outline" size={17} color="#10B981" />
+                    <Text style={[styles.myFoodsTitle, { color: textPrimary }]}>My Foods</Text>
+                  </View>
+                  <Pressable
+                    style={styles.browseAllBtn}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setPickerInitialFood(null);
+                      setShowPicker(true);
+                    }}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.browseAllText}>Browse all</Text>
+                    <Ionicons name="chevron-forward" size={14} color="#10B981" />
+                  </Pressable>
+                </View>
+
+                {topFoods.length > 0 ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.chipsRow}
+                  >
+                    {topFoods.map((food) => (
+                      <Pressable
+                        key={food.id}
+                        style={({ pressed }) => [
+                          styles.foodChip,
+                          { backgroundColor: buttonBg, borderColor },
+                          pressed && { opacity: 0.75 },
+                        ]}
+                        onPress={() => {
+                          Haptics.selectionAsync();
+                          setPickerInitialFood(food);
+                          setShowPicker(true);
+                        }}
+                      >
+                        {food.emoji ? (
+                          <Text style={styles.chipEmoji}>{food.emoji}</Text>
+                        ) : (
+                          <Ionicons name="restaurant-outline" size={14} color="#10B981" style={{ marginRight: 4 }} />
+                        )}
+                        <Text style={[styles.chipName, { color: textPrimary }]} numberOfLines={1}>
+                          {food.name}
+                        </Text>
+                        <Text style={[styles.chipCal, { color: textSecondary }]}>
+                          {food.per_100g.calories} kcal
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <Pressable
+                    style={[styles.emptyMyFoodsCard, { backgroundColor: buttonBg }]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setPickerInitialFood(null);
+                      setShowPicker(true);
+                    }}
+                  >
+                    <Ionicons name="add-circle-outline" size={18} color="#10B981" style={{ marginRight: 6 }} />
+                    <Text style={[styles.emptyMyFoodsText, { color: textSecondary }]}>
+                      Add or browse personal foods
+                    </Text>
+                  </Pressable>
+                )}
               </View>
 
               {/* Repeat Yesterday */}
@@ -375,13 +637,16 @@ export function AddFoodModal({
             </ScrollView>
           ) : (
             /* Describe Mode (Text + optional Image) */
-            <View style={styles.describeContainer}>
-              {!hasImage && (
-                <Text style={[styles.describeHint, { color: textSecondary }]}>
-                  Describe your meal, attach a photo, or both!
-                </Text>
-              )}
-              
+            <ScrollView
+              ref={describeScrollRef}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={[
+                styles.describeContainer,
+                { paddingBottom: Platform.OS === 'ios' ? 40 : 20 },
+              ]}
+            >
+              {/* 1. Take photo & Gallery */}
               <View style={styles.imageActions}>
                 <Pressable
                   style={[styles.imageBtn, { backgroundColor: buttonBg }]}
@@ -426,30 +691,114 @@ export function AddFoodModal({
                 </View>
               )}
 
-              <TextInput
-                style={[
-                  styles.input,
-                  { backgroundColor: inputBg, color: textPrimary, borderColor },
-                ]}
-                placeholder={
-                  hasImage
-                    ? "Optional: e.g. 'I ate half of this', 'extra dressing'..."
-                    : "e.g. 2 scrambled eggs and 1 slice of toast, or 'I ate half of this'"
-                }
-                placeholderTextColor={textSecondary}
-                multiline
-                maxLength={120}
-                value={description}
-                onChangeText={handleDescriptionChange}
-                autoFocus={!hasImage}
-              />
+              {/* 2. Searching results (@ mention suggestions) */}
+              {mentionInfo !== null && userMentionSuggestions.length > 0 && (
+                <View style={[styles.mentionContainer, { backgroundColor: buttonBg, borderColor }]}>
+                  <View style={styles.mentionHeader}>
+                    <View style={styles.mentionHeaderLeft}>
+                      <Ionicons name="at" size={13} color="#10B981" />
+                      <Text style={[styles.mentionHeaderText, { color: textSecondary }]}>
+                        Insert from My Foods {mentionInfo.query ? `for "${mentionInfo.query}"` : ''}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => setDismissedMentionIndex(mentionInfo.startIndex)}
+                      hitSlop={8}
+                      style={styles.mentionCloseBtn}
+                    >
+                      <Ionicons name="close" size={14} color={textSecondary} />
+                    </Pressable>
+                  </View>
 
-              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4, marginBottom: 8 }}>
-                <Text style={{ fontSize: 11, color: description.length >= 95 ? '#F59E0B' : textSecondary }}>
-                  {description.length}/120
-                </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={styles.mentionScroll}
+                  >
+                    {userMentionSuggestions.map((item) => (
+                      <Pressable
+                        key={`user-${item.id}`}
+                        style={({ pressed }) => [
+                          styles.mentionChip,
+                          { backgroundColor: cardBg, borderColor: '#10B981' },
+                          pressed && { opacity: 0.7 },
+                        ]}
+                        onPress={() => handleSelectMention(item)}
+                      >
+                        {item.emoji ? (
+                          <Text style={{ marginRight: 2 }}>{item.emoji}</Text>
+                        ) : (
+                          <Ionicons name="bookmark" size={12} color="#10B981" />
+                        )}
+                        <Text style={[styles.mentionName, { color: textPrimary }]}>{item.name}</Text>
+                        <Text style={[styles.mentionCal, { color: textSecondary }]}>
+                          {item.per_100g.calories} kcal
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* 3. That hint (format guidance tip banner) */}
+              {showFormatHint && (
+                <View
+                  style={[
+                    styles.formatHintBanner,
+                    {
+                      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.06)',
+                      borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : 'rgba(16, 185, 129, 0.2)',
+                    },
+                  ]}
+                >
+                  <Ionicons name="sparkles-outline" size={14} color="#10B981" />
+                  <Text style={[styles.formatHintText, { color: textSecondary }]}>
+                    Format: Type amount before <Text style={{ color: '#10B981', fontWeight: '600' }}>@food</Text> (e.g.{' '}
+                    <Text style={{ color: textPrimary, fontWeight: '500' }}>2 @Medium Egg</Text> or{' '}
+                    <Text style={{ color: textPrimary, fontWeight: '500' }}>150g @Rice</Text>)
+                  </Text>
+                  <Pressable onPress={dismissFormatHint} hitSlop={8} style={styles.dismissHintBtn}>
+                    <Ionicons name="close" size={16} color={textSecondary} />
+                  </Pressable>
+                </View>
+              )}
+
+              {/* 4. The input field (+ character counter) */}
+              <View style={styles.inputSection}>
+                <TextInput
+                  style={[
+                    styles.input,
+                    { backgroundColor: inputBg, color: textPrimary, borderColor },
+                    registeredFoods.length > 0 && { borderColor: '#10B981' },
+                  ]}
+                  placeholder={
+                    hasImage
+                      ? "Optional: e.g. 2 @Medium Egg or 'I ate half of this'..."
+                      : "e.g. 2 @Medium Egg and 1 slice toast, or 150g @Rice"
+                  }
+                  placeholderTextColor={textSecondary}
+                  multiline
+                  maxLength={160}
+                  onChangeText={handleDescriptionChange}
+                  autoFocus={!hasImage}
+                  onFocus={() => {
+                    setTimeout(() => {
+                      describeScrollRef.current?.scrollToEnd({ animated: true });
+                    }, 100);
+                  }}
+                >
+                  {renderFormattedDescription(description, registeredFoods, textPrimary)}
+                </TextInput>
+
+                <View style={styles.charCountRow}>
+                  <Text style={{ fontSize: 11, color: description.length >= 140 ? '#F59E0B' : textSecondary }}>
+                    {description.length}/160
+                  </Text>
+                </View>
               </View>
 
+              {/* 5. Buttons - back, discard, and analyse */}
               <View style={styles.actionButtons}>
                 <Pressable
                   style={[styles.backButton, { borderColor }]}
@@ -479,11 +828,49 @@ export function AddFoodModal({
                   <Text style={styles.submitButtonText}>Analyze</Text>
                 </Pressable>
               </View>
-            </View>
+            </ScrollView>
           )}
         </View>
       </KeyboardAvoidingView>
-    </Modal>
+      </Modal>
+
+      {/* Food Picker Sheet */}
+      {showPicker && (
+        <MyFoodPickerSheet
+          visible={showPicker}
+          mealType={mealType}
+          initialFood={pickerInitialFood}
+          onClose={() => {
+            setShowPicker(false);
+            setPickerInitialFood(null);
+          }}
+          onSelectFood={(mealName, foods, totals) => {
+            setShowPicker(false);
+            setPickerInitialFood(null);
+            onQuickAdd(mealName, foods, totals);
+            handleClose();
+          }}
+          onCreateNew={() => {
+            setShowPicker(false);
+            setPickerInitialFood(null);
+            setShowCreateFood(true);
+          }}
+        />
+      )}
+
+      {/* Create Food Modal */}
+      {showCreateFood && (
+        <CreateFoodModal
+          visible={showCreateFood}
+          onClose={() => setShowCreateFood(false)}
+          onSave={async (data) => {
+            await createFood(data);
+            setShowCreateFood(false);
+          }}
+          searchGlobalFoods={searchGlobalFoods}
+        />
+      )}
+    </>
   );
 }
 
@@ -493,17 +880,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
+  topSpacer: {
+    flex: 1,
+  },
   modalContent: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 24,
-    maxHeight: '85%',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 14,
+    maxHeight: '94%',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 14,
   },
   title: {
     fontSize: 20,
@@ -593,10 +985,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   describeContainer: {
-    gap: 16,
-  },
-  describeHint: {
-    fontSize: 14,
+    gap: 12,
   },
   imageActions: {
     flexDirection: 'row',
@@ -642,33 +1031,57 @@ const styles = StyleSheet.create({
   imageRemoveBtn: {
     padding: 4,
   },
+  formatHintBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 8,
+  },
+  formatHintText: {
+    fontSize: 12,
+    lineHeight: 16,
+    flex: 1,
+  },
+  dismissHintBtn: {
+    padding: 3,
+    marginLeft: 2,
+  },
+  inputSection: {
+  },
   input: {
     borderWidth: 1,
     borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    minHeight: 120,
+    padding: 12,
+    fontSize: 15,
+    minHeight: 85,
     textAlignVertical: 'top',
+  },
+  charCountRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 4,
   },
   actionButtons: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
+    gap: 10,
   },
   backButton: {
     flex: 1,
-    padding: 16,
+    padding: 14,
     borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
   },
   backButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
   discardButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
@@ -677,13 +1090,13 @@ const styles = StyleSheet.create({
   },
   discardButtonText: {
     color: '#EF4444',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
   },
   submitButton: {
     flex: 2,
     backgroundColor: '#10B981',
-    padding: 16,
+    padding: 14,
     borderRadius: 12,
     alignItems: 'center',
   },
@@ -693,7 +1106,7 @@ const styles = StyleSheet.create({
   },
   submitButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
   draftBanner: {
@@ -737,5 +1150,113 @@ const styles = StyleSheet.create({
   },
   discardDraftIconBtn: {
     padding: 6,
+  },
+  myFoodsSection: {
+    marginBottom: 16,
+  },
+  myFoodsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  myFoodsHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  myFoodsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  browseAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingVertical: 2,
+  },
+  browseAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#10B981',
+  },
+  chipsRow: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  foodChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 6,
+  },
+  chipEmoji: {
+    fontSize: 14,
+  },
+  chipName: {
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 120,
+  },
+  chipCal: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  emptyMyFoodsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  emptyMyFoodsText: {
+    fontSize: 13,
+  },
+  mentionContainer: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 8,
+  },
+  mentionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  mentionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1,
+  },
+  mentionCloseBtn: {
+    padding: 2,
+  },
+  mentionHeaderText: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  mentionScroll: {
+    gap: 8,
+  },
+  mentionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 6,
+  },
+  mentionName: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  mentionCal: {
+    fontSize: 11,
   },
 });

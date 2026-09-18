@@ -6,6 +6,7 @@ interface ScanFoodParams {
   imageBase64?: string;
   mealType?: string;
   idempotencyKey?: string;
+  taggedFoods?: any[];
   onUploadProgress?: (progress: number) => void;
   onUploadComplete?: () => void;
 }
@@ -16,6 +17,7 @@ export function invokeScanFoodWithProgress({
   imageBase64,
   mealType,
   idempotencyKey,
+  taggedFoods,
   onUploadProgress,
   onUploadComplete,
 }: ScanFoodParams): Promise<any> {
@@ -116,6 +118,9 @@ export function invokeScanFoodWithProgress({
         if (text) formData.append('text', text);
         if (mealType) formData.append('meal_type', mealType);
         if (idempotencyKey) formData.append('idempotency_key', idempotencyKey);
+        if (taggedFoods && taggedFoods.length > 0) {
+          formData.append('tagged_foods', JSON.stringify(taggedFoods));
+        }
 
         xhr.send(formData);
       } else if (imageBase64) {
@@ -126,6 +131,7 @@ export function invokeScanFoodWithProgress({
             image_base64: imageBase64,
             meal_type: mealType,
             idempotency_key: idempotencyKey,
+            tagged_foods: taggedFoods,
           })
         );
         triggerUploadComplete();
@@ -136,6 +142,7 @@ export function invokeScanFoodWithProgress({
             text,
             meal_type: mealType,
             idempotency_key: idempotencyKey,
+            tagged_foods: taggedFoods,
           })
         );
         triggerUploadComplete();

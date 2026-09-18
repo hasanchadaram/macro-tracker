@@ -798,6 +798,27 @@ export default function ProfileScreen() {
 
             <View style={[styles.divider, { backgroundColor: borderColor }]} />
 
+            <Pressable
+              style={styles.listItem}
+              onPress={() => {
+                Haptics.selectionAsync();
+                router.push('/my-foods' as any);
+              }}
+            >
+              <View style={styles.listItemLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                  <Ionicons name="book-outline" size={20} color="#10B981" />
+                </View>
+                <View style={styles.itemTextContainer}>
+                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>My Foods</Text>
+                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>Personal food library & recipes</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: borderColor }]} />
+
             <Pressable 
               style={styles.listItem}
               onPress={handleRunAdaptiveCheckIn}

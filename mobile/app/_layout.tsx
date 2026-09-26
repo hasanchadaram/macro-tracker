@@ -25,6 +25,8 @@ import "react-native-reanimated";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { supabase } from "@/lib/supabase";
 import { AlertProvider, useAlert } from "@/components/ui/CustomAlert";
+import { useAppUpdate } from "@/hooks/useAppUpdate";
+import { AppUpdateModal } from "@/components/AppUpdateModal";
 
 export const unstable_settings = {
   anchor: "(tabs)",
@@ -33,8 +35,24 @@ export const unstable_settings = {
 export default function RootLayout() {
   return (
     <AlertProvider>
-      <RootContent />
+      <AppUpdateWrapper />
     </AlertProvider>
+  );
+}
+
+function AppUpdateWrapper() {
+  const { updateResult, showModal, dismissModal, handleOpenStore } = useAppUpdate();
+
+  return (
+    <>
+      <RootContent />
+      <AppUpdateModal
+        visible={showModal}
+        updateResult={updateResult}
+        onDismiss={dismissModal}
+        onUpdate={handleOpenStore}
+      />
+    </>
   );
 }
 

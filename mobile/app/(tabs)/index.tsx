@@ -156,6 +156,7 @@ export default function HomeScreen() {
   const [scanningType, setScanningType] = useState<'meal' | 'exercise' | null>(null);
   const [hasImage, setHasImage] = useState(false);
   const [isUploaded, setIsUploaded] = useState(false);
+  const [hasCustomKey, setHasCustomKey] = useState(false);
   
   // Review Modal State
   const [estimate, setEstimate] = useState<MealEstimate | null>(null);
@@ -297,14 +298,12 @@ export default function HomeScreen() {
         setTodaysExercises([]);
       }
 
-      // 5. Fetch today's weight
+      // 5. Fetch weight for selected date
       const { data: weightData } = await supabase
         .from('weight_logs')
         .select('*')
         .eq('user_id', uid)
-        .or(`log_date.eq.${dateStr},and(recorded_at.gte.${startIso},recorded_at.lte.${endIso})`)
-        .order('recorded_at', { ascending: false })
-        .limit(1)
+        .eq('log_date', dateStr)
         .maybeSingle();
 
       if (weightData) {
@@ -531,6 +530,14 @@ export default function HomeScreen() {
             setShowWalkthrough(true);
           }
         }
+
+        // Check AI settings / BYOK status
+        try {
+          const { data: aiSettingsData } = await supabase.rpc('get_ai_settings');
+          if (aiSettingsData?.has_custom_key && isMounted) {
+            setHasCustomKey(true);
+          }
+        } catch {}
 
         initCatalog(supabase);
         fetchDashboardData(currentUser.id, selectedDate);
@@ -978,6 +985,22 @@ export default function HomeScreen() {
         }
       }
 
+      // Determine appropriate recorded_at:
+      // If logging for today, use current ISO time.
+      // If logging for a past date:
+      // - If there's an existing record with a recorded_at on that past date, preserve it.
+      // - Otherwise, set it to midday UTC on that date (${todayDate}T12:00:00.000Z) so that
+      //   timestamp-based queries or sorting don't misclassify it as logged today.
+      const isToday = todayDate === getLocalDateString();
+      let recordedAt = new Date().toISOString();
+      if (!isToday) {
+        if (todaysWeight?.recorded_at && todaysWeight.recorded_at.startsWith(todayDate)) {
+          recordedAt = todaysWeight.recorded_at;
+        } else {
+          recordedAt = `${todayDate}T12:00:00.000Z`;
+        }
+      }
+
       const { data, error } = await supabase
         .from('weight_logs')
         .upsert(
@@ -985,7 +1008,7 @@ export default function HomeScreen() {
             user_id: userId,
             weight,
             log_date: todayDate,
-            recorded_at: new Date().toISOString(),
+            recorded_at: recordedAt,
           },
           { onConflict: 'user_id,log_date' }
         )
@@ -995,15 +1018,27 @@ export default function HomeScreen() {
       if (error) throw error;
       setTodaysWeight(data as WeightLog);
       
-      // Update profile weight
-      await supabase.from('profiles').update({ weight_kg: weight }).eq('id', userId);
-      setProfile(prev => prev ? { ...prev, weight_kg: weight } : null);
+      // Update profile weight:
+      // Only update profile.weight_kg if there is no weight logged on a date AFTER todayDate
+      const { data: laterLogs } = await supabase
+        .from('weight_logs')
+        .select('id')
+        .eq('user_id', userId)
+        .gt('log_date', todayDate)
+        .limit(1);
+
+      const isMostRecentLog = !laterLogs || laterLogs.length === 0;
+      if (isMostRecentLog) {
+        await supabase.from('profiles').update({ weight_kg: weight }).eq('id', userId);
+        setProfile(prev => prev ? { ...prev, weight_kg: weight } : null);
+      }
 
       // Check if weekly check-in is due (7+ days since last check-in or creation)
-      const currentProf = profile ? { ...profile, weight_kg: weight } : null;
+      const currentProf = profile ? (isMostRecentLog ? { ...profile, weight_kg: weight } : profile) : null;
       const checkInRefDate = currentProf?.last_check_in_date || (currentProf?.created_at ? currentProf.created_at.split('T')[0] : null);
       if (currentProf && checkInRefDate) {
-        const daysDiff = Math.floor((new Date(todayDate).getTime() - new Date(checkInRefDate).getTime()) / (1000 * 60 * 60 * 24));
+        const todayStr = getLocalDateString();
+        const daysDiff = Math.floor((new Date(todayStr).getTime() - new Date(checkInRefDate).getTime()) / (1000 * 60 * 60 * 24));
         setDaysSinceLastCheckIn(daysDiff);
 
         if (daysDiff >= 7) {
@@ -1246,13 +1281,24 @@ export default function HomeScreen() {
           'Daily Limit Reached',
           err.message,
           [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Settings', onPress: () => router.push('/settings') }
+            { text: 'Settings', onPress: () => router.push('/settings') },
+            { text: 'Cancel', style: 'cancel' }
           ]
         );
         setAddModalVisible(true);
       } else {
-        showAlert('Analysis Failed', err.message || 'Could not analyze meal.');
+        if (hasCustomKey) {
+          showAlert(
+            'Analysis Failed',
+            `${err.message || 'Could not analyze meal.'}\n\nYou can wait a moment and try again, or switch to a different AI model in your Profile settings.`,
+            [
+              { text: 'Change Model', onPress: () => router.push('/settings') },
+              { text: 'OK', style: 'cancel' }
+            ]
+          );
+        } else {
+          showAlert('Analysis Failed', err.message || 'Could not analyze meal.');
+        }
         setAddModalVisible(true);
       }
     } finally {
@@ -1724,6 +1770,74 @@ export default function HomeScreen() {
     activityCreditFactor,
   ]);
 
+  // First-time BYOK Setup Landing Prompt
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const checkByokPrompt = async () => {
+      // Don't show while dashboard is still loading, or while walkthrough/onboarding is active
+      if (isDashboardLoading || showWalkthrough || showOnboarding || !userId) {
+        return;
+      }
+
+      // If user already has a custom key, no need to prompt
+      if (hasCustomKey) {
+        return;
+      }
+
+      // Check if permanently dismissed
+      const permanentDismiss = await AsyncStorage.getItem('byok_prompt_dismissed_permanent');
+      if (permanentDismiss === 'true') {
+        return;
+      }
+
+      // Check if postponed with 'Later' (24-hour cooldown)
+      const laterTimestamp = await AsyncStorage.getItem('byok_prompt_later_timestamp');
+      if (laterTimestamp) {
+        const timeDiff = Date.now() - parseInt(laterTimestamp, 10);
+        if (timeDiff < 24 * 60 * 60 * 1000) {
+          return;
+        }
+      }
+
+      // Delay slightly so home screen renders smoothly first
+      timer = setTimeout(() => {
+        showAlert(
+          'Bring Your Own Key (BYOK) 🔑',
+          'Use your own Google Gemini API key to log meals using your personal free tier quota and choose your preferred AI model.',
+          [
+            {
+              text: 'Set Up Key',
+              onPress: async () => {
+                await AsyncStorage.setItem('byok_prompt_dismissed_permanent', 'true');
+                router.push({ pathname: '/settings', params: { openByok: 'true' } });
+              },
+            },
+            {
+              text: 'Later',
+              onPress: async () => {
+                await AsyncStorage.setItem('byok_prompt_later_timestamp', Date.now().toString());
+              },
+            },
+            {
+              text: "Don't Ask Again",
+              style: 'cancel',
+              onPress: async () => {
+                await AsyncStorage.setItem('byok_prompt_dismissed_permanent', 'true');
+              },
+            },
+          ]
+        );
+      }, 600);
+    };
+
+    checkByokPrompt();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [isDashboardLoading, showWalkthrough, showOnboarding, userId, hasCustomKey]);
+
   return (
     <SafeAreaView ref={rootRef} style={[styles.container, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -1870,6 +1984,7 @@ export default function HomeScreen() {
           <WeightSection
             latestLog={todaysWeight}
             isFutureDate={isFutureDate}
+            dateStr={selectedDate}
             onAddPress={() => {
               if (isFutureDate) {
                 showAlert('Future Date', 'You cannot log weight for a future date.');
@@ -1914,6 +2029,7 @@ export default function HomeScreen() {
         visible={addWeightVisible}
         initialWeight={todaysWeight?.weight ?? profile?.weight_kg}
         isEditing={!!todaysWeight}
+        dateStr={selectedDate}
         onClose={() => setAddWeightVisible(false)}
         onLogWeight={handleLogWeight}
       />

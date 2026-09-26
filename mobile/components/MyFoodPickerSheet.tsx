@@ -97,14 +97,23 @@ export function MyFoodPickerSheet({
     }
   }, [visible, initialFood]);
 
-  // Sync myFoods when prop or data changes
+  // Sync and filter myFoods instantly (0ms client-side, case-insensitive, word prefix & substring matching)
   useEffect(() => {
     if (!searchQuery.trim()) {
       setFilteredMyFoods(myFoods);
     } else {
-      searchMyFoods(searchQuery).then(setFilteredMyFoods);
+      const q = searchQuery.toLowerCase().trim();
+      const qWords = q.split(/\s+/).filter(Boolean);
+      const filtered = myFoods.filter((f) => {
+        const name = f.name.toLowerCase();
+        if (name.includes(q)) return true;
+        if (qWords.length > 1 && qWords.every((w) => name.includes(w))) return true;
+        const words = name.split(/[\s,.-]+/);
+        return words.some((w) => w.startsWith(q));
+      });
+      setFilteredMyFoods(filtered);
     }
-  }, [myFoods, searchQuery, searchMyFoods]);
+  }, [myFoods, searchQuery]);
 
   // Handle global food search
   useEffect(() => {

@@ -79,7 +79,7 @@ export function FeedbackModal({ visible, onClose }: FeedbackModalProps) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
-      const appVersion = Constants.expoConfig?.version || '1.0.0';
+      const appVersion = Constants.expoConfig?.version || '1.1.4';
       const osVersion = `${Platform.OS} ${Platform.Version}`;
       const deviceInfo = {
         platform: Platform.OS,

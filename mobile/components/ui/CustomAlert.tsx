@@ -67,7 +67,16 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     if (!options?.buttons || options.buttons.length === 0) {
       return (
         <Pressable
-          style={[styles.button, { borderTopColor: isDark ? '#334155' : '#E2E8F0', borderTopWidth: 1 }]}
+          style={({ pressed }) => [
+            styles.button,
+            {
+              borderTopColor: isDark ? '#334155' : '#E2E8F0',
+              borderTopWidth: 1,
+              backgroundColor: pressed
+                ? isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)'
+                : 'transparent',
+            },
+          ]}
           onPress={() => hideAlert()}
         >
           <Text style={[styles.buttonText, { color: '#3B82F6', fontWeight: '600' }]}>OK</Text>
@@ -75,13 +84,79 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       );
     }
 
+    const buttons = options.buttons;
+    // Auto-detect when buttons would be congested horizontally
+    const shouldStackVertically =
+      buttons.length > 2 ||
+      buttons.some((b) => b.text.length > 12) ||
+      buttons.reduce((sum, b) => sum + b.text.length, 0) > 20;
+
+    if (shouldStackVertically) {
+      // For vertical stack: place 'cancel' button at the bottom for standard mobile UX
+      const sortedButtons = [...buttons].sort((a, b) => {
+        if (a.style === 'cancel' && b.style !== 'cancel') return 1;
+        if (a.style !== 'cancel' && b.style === 'cancel') return -1;
+        return 0;
+      });
+
+      return (
+        <View style={[styles.buttonContainerVertical, { borderTopColor: isDark ? '#334155' : '#E2E8F0' }]}>
+          {sortedButtons.map((btn, index) => {
+            const isDestructive = btn.style === 'destructive';
+            const isCancel = btn.style === 'cancel';
+
+            let btnColor = '#3B82F6';
+            if (isDestructive) btnColor = '#EF4444';
+            if (isCancel) btnColor = isDark ? '#94A3B8' : '#64748B';
+
+            return (
+              <Pressable
+                key={index}
+                style={({ pressed }) => [
+                  styles.buttonVertical,
+                  index > 0 && {
+                    borderTopWidth: 1,
+                    borderTopColor: isDark ? '#334155' : '#E2E8F0',
+                  },
+                  {
+                    backgroundColor: pressed
+                      ? isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)'
+                      : 'transparent',
+                  },
+                ]}
+                onPress={() => {
+                  hideAlert(() => {
+                    if (btn.onPress) btn.onPress();
+                  });
+                }}
+              >
+                <Text
+                  style={[
+                    styles.buttonText,
+                    {
+                      color: btnColor,
+                      fontWeight: isCancel ? '500' : '600',
+                      textAlign: 'center',
+                    },
+                  ]}
+                  numberOfLines={2}
+                >
+                  {btn.text}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      );
+    }
+
     return (
       <View style={[styles.buttonContainer, { borderTopColor: isDark ? '#334155' : '#E2E8F0' }]}>
-        {options.buttons.map((btn, index) => {
-          const isLast = index === options.buttons!.length - 1;
+        {buttons.map((btn, index) => {
+          const isLast = index === buttons.length - 1;
           const isDestructive = btn.style === 'destructive';
           const isCancel = btn.style === 'cancel';
-          
+
           let btnColor = '#3B82F6';
           if (isDestructive) btnColor = '#EF4444';
           if (isCancel) btnColor = isDark ? '#94A3B8' : '#64748B';
@@ -89,13 +164,18 @@ export function AlertProvider({ children }: { children: ReactNode }) {
           return (
             <Pressable
               key={index}
-              style={[
+              style={({ pressed }) => [
                 styles.button,
-                options.buttons!.length > 1 && { flex: 1 },
-                !isLast && options.buttons!.length > 1 && { 
-                  borderRightWidth: 1, 
-                  borderRightColor: isDark ? '#334155' : '#E2E8F0' 
-                }
+                { flex: 1 },
+                !isLast && {
+                  borderRightWidth: 1,
+                  borderRightColor: isDark ? '#334155' : '#E2E8F0',
+                },
+                {
+                  backgroundColor: pressed
+                    ? isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)'
+                    : 'transparent',
+                },
               ]}
               onPress={() => {
                 hideAlert(() => {
@@ -103,11 +183,14 @@ export function AlertProvider({ children }: { children: ReactNode }) {
                 });
               }}
             >
-              <Text style={[
-                styles.buttonText, 
-                { color: btnColor },
-                (btn.style === 'cancel' || options.buttons!.length === 1) && { fontWeight: '600' }
-              ]}>
+              <Text
+                style={[
+                  styles.buttonText,
+                  { color: btnColor },
+                  (btn.style === 'cancel' || buttons.length === 1) && { fontWeight: '600' },
+                ]}
+                numberOfLines={1}
+              >
                 {btn.text}
               </Text>
             </Pressable>
@@ -122,11 +205,13 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       {children}
       <Modal transparent visible={visible} animationType="none">
         <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
-          <View style={[
-            styles.alertBox, 
-            { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' }
-          ]}>
-            <ScrollView 
+          <View
+            style={[
+              styles.alertBox,
+              { backgroundColor: isDark ? '#1E293B' : '#FFFFFF' },
+            ]}
+          >
+            <ScrollView
               style={{ maxHeight: 420 }}
               contentContainerStyle={styles.contentContainer}
               showsVerticalScrollIndicator={false}
@@ -136,13 +221,15 @@ export function AlertProvider({ children }: { children: ReactNode }) {
                 {options?.title}
               </Text>
               {options?.message && (
-                <Text style={[
-                  styles.message, 
-                  { 
-                    color: isDark ? '#94A3B8' : '#64748B',
-                    textAlign: options.message.includes('\n') ? 'left' : 'center',
-                  }
-                ]}>
+                <Text
+                  style={[
+                    styles.message,
+                    {
+                      color: isDark ? '#94A3B8' : '#64748B',
+                      textAlign: options.message.includes('\n') ? 'left' : 'center',
+                    },
+                  ]}
+                >
                   {options.message}
                 </Text>
               )}
@@ -158,47 +245,61 @@ export function AlertProvider({ children }: { children: ReactNode }) {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 24,
+    padding: 20,
   },
   alertBox: {
     width: '100%',
-    maxWidth: 340,
-    borderRadius: 16,
+    maxWidth: 360,
+    borderRadius: 20,
     overflow: 'hidden',
-    elevation: 5,
+    elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
   },
   contentContainer: {
-    padding: 20,
+    padding: 22,
     alignItems: 'center',
   },
   title: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '700',
     textAlign: 'center',
     marginBottom: 8,
+    letterSpacing: -0.2,
   },
   message: {
     fontSize: 14,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 21,
   },
   buttonContainer: {
     flexDirection: 'row',
     borderTopWidth: 1,
   },
+  buttonContainerVertical: {
+    flexDirection: 'column',
+    borderTopWidth: 1,
+  },
   button: {
     paddingVertical: 14,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonVertical: {
+    width: '100%',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
   buttonText: {
     fontSize: 16,
+    textAlign: 'center',
   },
 });

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, Image, StyleSheet, StyleProp, ViewStyle } from 'react-native';
+import { View, Text, StyleSheet, StyleProp, ViewStyle } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { getAvatarById } from '../constants/avatars';
 
@@ -34,13 +35,14 @@ export default function UserAvatar({
   const badgeSize = Math.max(18, Math.round(size * 0.36));
   const iconSize = Math.round(badgeSize * 0.58);
 
+  // Note: Avoid overflow: 'hidden' with borderRadius on Android Fabric as it causes
+  // native image clipping bugs. expo-image handles borderRadius natively.
   const containerStyle: ViewStyle = {
     width: size,
     height: size,
     borderRadius,
     borderWidth,
     borderColor: borderColor || 'transparent',
-    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
   };
@@ -51,7 +53,8 @@ export default function UserAvatar({
         <Image
           source={avatarOption.image}
           style={{ width: size, height: size, borderRadius }}
-          resizeMode="cover"
+          contentFit="cover"
+          transition={150}
         />
       );
     }
@@ -61,7 +64,8 @@ export default function UserAvatar({
         <Image
           source={{ uri: googleAvatarUrl }}
           style={{ width: size, height: size, borderRadius }}
-          resizeMode="cover"
+          contentFit="cover"
+          transition={150}
           onError={() => setImgError(true)}
         />
       );

@@ -88,6 +88,20 @@ export function useMyFoods(): UseMyFoodsReturn {
   const searchMyFoods = useCallback(async (query: string): Promise<UserFood[]> => {
     if (!query.trim()) return myFoods;
 
+    const q = query.toLowerCase().trim();
+    const qWords = q.split(/\s+/).filter(Boolean);
+    const localFiltered = myFoods.filter((f) => {
+      const name = f.name.toLowerCase();
+      if (name.includes(q)) return true;
+      if (qWords.length > 1 && qWords.every((w) => name.includes(w))) return true;
+      const words = name.split(/[\s,.-]+/);
+      return words.some((w) => w.startsWith(q));
+    });
+
+    if (localFiltered.length > 0) {
+      return localFiltered;
+    }
+
     try {
       const { data, error: err } = await supabase
         .rpc('search_my_foods', { p_query: query.trim(), p_limit: 20 });
@@ -96,9 +110,7 @@ export function useMyFoods(): UseMyFoodsReturn {
       return (data as UserFood[]) || [];
     } catch (err: any) {
       console.error('searchMyFoods error:', err);
-      // Fallback to client-side filter
-      const q = query.toLowerCase();
-      return myFoods.filter(f => f.name.toLowerCase().includes(q));
+      return localFiltered;
     }
   }, [myFoods]);
 
@@ -139,7 +151,11 @@ export function useMyFoods(): UseMyFoodsReturn {
 
       const result = data as { success: boolean; food_id: string; food: UserFood };
       if (result?.success && result.food) {
-        setMyFoods(prev => [result.food, ...prev]);
+        setMyFoods(prev => {
+          const updated = [result.food, ...prev];
+          AsyncStorage.setItem(USER_FOODS_CACHE_KEY, JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
         return result.food;
       }
       return null;
@@ -171,7 +187,11 @@ export function useMyFoods(): UseMyFoodsReturn {
 
       const result = data as { success: boolean; food_id: string; food: UserFood };
       if (result?.success && result.food) {
-        setMyFoods(prev => prev.map(f => f.id === id ? result.food : f));
+        setMyFoods(prev => {
+          const updated = prev.map(f => f.id === id ? result.food : f);
+          AsyncStorage.setItem(USER_FOODS_CACHE_KEY, JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
         return result.food;
       }
       return null;
@@ -191,7 +211,11 @@ export function useMyFoods(): UseMyFoodsReturn {
 
       const result = data as { success: boolean };
       if (result?.success) {
-        setMyFoods(prev => prev.filter(f => f.id !== id));
+        setMyFoods(prev => {
+          const updated = prev.filter(f => f.id !== id);
+          AsyncStorage.setItem(USER_FOODS_CACHE_KEY, JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
         return true;
       }
       return false;

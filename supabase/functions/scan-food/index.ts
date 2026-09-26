@@ -29,7 +29,7 @@ const userGlobalDailyLimit = parseInt(Deno.env.get('USER_GLOBAL_LIMIT_PER_DAY') 
 const edgeBurstLimit = parseInt(Deno.env.get('EDGE_LIMIT_PER_MINUTE') || '8', 10);
 const edgeDailyLimit = parseInt(Deno.env.get('EDGE_LIMIT_PER_DAY') || '16', 10);
 const aiLimitMinute = parseInt(Deno.env.get('AI_LIMIT_PER_MINUTE') || '3', 10);
-const aiLimitDay = parseInt(Deno.env.get('AI_LIMIT_PER_DAY') || '6', 10);
+const aiLimitDay = parseInt(Deno.env.get('AI_LIMIT_PER_DAY') || '8', 10);
 
 const globalLimiter = redis ? new Ratelimit({
   redis,
@@ -190,21 +190,10 @@ function getThinkingConfig(model: string): { thinkingLevel: string } {
   return { thinkingLevel: "MINIMAL" };
 }
 
-const geminiPrompt = `
-Analyze the provided meal from the user's text and/or image.
-
-Identify:
-- The food items
-- Estimated quantity of each food
-- Total nutritional values for the meal
-- A short, simple, 2-4 word title for the meal in the 'title' field (e.g., 'Chicken Salad' or 'Breakfast Bowl')
-
-Nutrition values must be numeric and represent the entire meal.
-If the exact quantity is unclear, make a reasonable estimate.
-If the user's text references a food with '@' (e.g. '@Amma Dal', '@My Oats'), recognize this as the user's personal recipe/food and incorporate it accurately.
-Do not invent foods that are not reasonably identifiable from the input.
-For confidence, provide a value between 0 and 1.
-`;
+const geminiPrompt = `Analyze meal from text and/or image.
+Identify foods, estimated quantities, and macro totals.
+Provide a 2-4 word meal title (e.g., 'Avocado Toast').
+Do not invent unidentifiable foods. Confidence: 0-1.`;
 
 const macroSchema = {
   type: "object",
@@ -283,9 +272,10 @@ function processTaggedFoods(
     if (!food || !food.name) continue;
     const escaped = food.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // Matches e.g. "2 @Medium Egg", "150g @Medium Egg", "@Medium Egg x2", "@Medium Egg 100g", or "@Medium Egg"
+    // Matches e.g.:
+    // "2 @Medium Egg", "2 of my Medium Egg", "2 my Medium Egg", "2 scoops of my Whey Protein", "150g my Rice", "my Medium Egg x2", "my Medium Egg"
     const regex = new RegExp(
-      `(?:([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?\\s+)?@${escaped}(?:\\s*(?:x|\\*|for)?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?)?`,
+      `(?:([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?\\s+(?:of\\s+)?)?(?:@|\\bmy\\s+)${escaped}(?:\\s*(?:x|\\*|for)?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([a-zA-Z]+)?)?`,
       'i'
     );
 
@@ -293,7 +283,10 @@ function processTaggedFoods(
     if (!match) continue;
 
     const qtyStr = match[1] || match[3];
-    const unitStr = (match[2] || match[4] || '').toLowerCase();
+    let unitStr = (match[2] || match[4] || '').toLowerCase();
+    if (unitStr === 'of' || unitStr === 'x') {
+      unitStr = '';
+    }
 
     let num = 1;
     if (qtyStr) {
@@ -695,7 +688,7 @@ Deno.serve(async (req) => {
             {
               user_id: user.id,
               ai_model: expectedDbValue,
-              byok_enabled: !!customApiKey,
+              byok_enabled: true,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'user_id' }
@@ -737,7 +730,7 @@ Deno.serve(async (req) => {
           const hours = Math.ceil(retryAfter / 3600);
           return new Response(
             JSON.stringify({ 
-              error: `You've reached your free daily limit of ${aiLimitDay} meal scans. Resets in ${hours} hour${hours > 1 ? 's' : ''}, or add your own API key in Settings for unlimited scans.`,
+              error: `You've reached your free daily limit of ${aiLimitDay} meal scans. Resets in ${hours} hour${hours > 1 ? 's' : ''}, or add your own API key in Settings to use your personal quota.`,
               retry_after_seconds: retryAfter,
               rate_limited: true,
               is_daily_limit: true
@@ -759,6 +752,14 @@ Deno.serve(async (req) => {
     console.log(`scan-food: user=${user.id} usingKey=${customApiKey ? 'USER_CUSTOM_BYOK' : 'SERVER_DEFAULT'}`);
 
     const parts: any[] = [{ text: geminiPrompt }];
+
+    if (calculatedItems.length > 0) {
+      const taggedSummary = calculatedItems.map(i => `${i.quantity} ${i.unit} ${i.name}`).join(', ');
+      parts.push({
+        text: `Already logged by user: ${taggedSummary}.
+DO NOT include or re-estimate these items in 'foods' or 'totals'. Only estimate remaining items. Title should still describe the complete meal.`
+      });
+    }
 
     const textToAnalyze = calculatedItems.length > 0 ? remainingText : (text || '');
     if (textToAnalyze && textToAnalyze.trim().length > 0) {
@@ -850,17 +851,43 @@ Deno.serve(async (req) => {
       throw new Error("Gemini response was not valid JSON");
     }
 
-    // Merge exact calculated tagged foods into Gemini output
+    // Merge exact calculated tagged foods into Gemini output (with duplicate protection)
     if (calculatedItems.length > 0) {
-      const combinedFoods = [...calculatedItems, ...(parsedResponse.foods || [])];
-      const combinedTotals = {
-        calories: (parsedResponse.totals?.calories || 0) + calculatedItems.reduce((s, i) => s + i.calories, 0),
-        protein_g: Math.round(((parsedResponse.totals?.protein_g || 0) + calculatedItems.reduce((s, i) => s + i.protein_g, 0)) * 10) / 10,
-        carbs_g: Math.round(((parsedResponse.totals?.carbs_g || 0) + calculatedItems.reduce((s, i) => s + i.carbs_g, 0)) * 10) / 10,
-        fat_g: Math.round(((parsedResponse.totals?.fat_g || 0) + calculatedItems.reduce((s, i) => s + i.fat_g, 0)) * 10) / 10,
+      const taggedNamesLower = new Set(calculatedItems.map(i => i.name.toLowerCase().trim()));
+
+      // Defense-in-depth: filter out any duplicate items Gemini may have returned despite the prompt
+      const filteredGeminiFoods = (parsedResponse.foods || []).filter((gf: any) => {
+        if (!gf || !gf.name) return false;
+        const gfName = gf.name.toLowerCase().trim();
+        const isDuplicate = Array.from(taggedNamesLower).some(tn => 
+          gfName === tn || gfName.includes(tn) || tn.includes(gfName)
+        );
+        if (isDuplicate) {
+          console.log(`[scan-food] Dropped duplicate item from Gemini: "${gf.name}" (already covered by user's tagged food)`);
+          return false;
+        }
+        return true;
+      });
+
+      // Recalculate Gemini's portion of totals (in case a duplicate was filtered out)
+      const geminiCals = filteredGeminiFoods.reduce((s: number, f: any) => s + (Number(f.calories) || 0), 0);
+      const geminiP = filteredGeminiFoods.reduce((s: number, f: any) => s + (Number(f.protein_g) || 0), 0);
+      const geminiC = filteredGeminiFoods.reduce((s: number, f: any) => s + (Number(f.carbs_g) || 0), 0);
+      const geminiF = filteredGeminiFoods.reduce((s: number, f: any) => s + (Number(f.fat_g) || 0), 0);
+
+      const taggedCals = calculatedItems.reduce((s, i) => s + i.calories, 0);
+      const taggedP = calculatedItems.reduce((s, i) => s + i.protein_g, 0);
+      const taggedC = calculatedItems.reduce((s, i) => s + i.carbs_g, 0);
+      const taggedF = calculatedItems.reduce((s, i) => s + i.fat_g, 0);
+
+      parsedResponse.foods = [...calculatedItems, ...filteredGeminiFoods];
+      parsedResponse.totals = {
+        calories: taggedCals + geminiCals,
+        protein_g: Math.round((taggedP + geminiP) * 10) / 10,
+        carbs_g: Math.round((taggedC + geminiC) * 10) / 10,
+        fat_g: Math.round((taggedF + geminiF) * 10) / 10,
       };
-      parsedResponse.foods = combinedFoods;
-      parsedResponse.totals = combinedTotals;
+
       if (!parsedResponse.title || parsedResponse.title === 'Meal' || parsedResponse.title === 'Unknown') {
         parsedResponse.title = `${calculatedItems[0].name} & more`;
       }

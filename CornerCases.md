@@ -22,17 +22,17 @@ All limits are dynamically configurable from Supabase dashboard secrets via `sup
 2. **Tier 2: Global Per-User Edge Limits (Cross-Function Aggregated Quota)**:
    - `8 req/min` (`USER_GLOBAL_LIMIT_PER_MINUTE=8`).
    - `20 req/day` (`USER_GLOBAL_LIMIT_PER_DAY=20`).
-   - Aggregated across **all edge functions combined** (`scan-food`, `log-meal`, `log-exercise`, `submit-feedback`) per authenticated user ID using shared Upstash Redis keys (`ratelimit:user:global:minute` & `ratelimit:user:global:day`).
+   - Aggregated across **all edge functions combined** (`scan-food`, `log-meal`, `log-exercise`, `resolve-food`, `submit-feedback`) per authenticated user ID using shared Upstash Redis keys (`ratelimit:user:global:minute` & `ratelimit:user:global:day`).
 
 3. **Tier 3: General Edge Function Call Limits (Per-Function)**:
-   - `log-meal`, `log-exercise`, `scan-food`: `8 req/min` (`EDGE_LIMIT_PER_MINUTE=8`), `16 req/day` (`EDGE_LIMIT_PER_DAY=16`).
+   - `log-meal`, `log-exercise`, `scan-food`, `resolve-food`: `8 req/min` (`EDGE_LIMIT_PER_MINUTE=8`), `16 req/day` (`EDGE_LIMIT_PER_DAY=16`).
      *(Note: `log-meal` limits are merged into these general edge limits `EDGE_LIMIT_PER_MINUTE` and `EDGE_LIMIT_PER_DAY`).*
    - `submit-feedback`: `10 req/day` (`FEEDBACK_LIMIT_PER_DAY=10`), `100 req/day` platform-wide (`FEEDBACK_GLOBAL_LIMIT_PER_DAY=100`).
 
 4. **Tier 4: Third-Party AI Quotas (Free Tier vs. BYOK)**:
-   - **Gemini Vision / Flash Calls (`scan-food`)**: `3 req/min`, `6 req/day` (`AI_LIMIT_PER_MINUTE=3`, `AI_LIMIT_PER_DAY=6`).
+   - **Gemini Vision / Flash Calls (`scan-food`, `resolve-food`)**: `3 req/min`, `8 req/day` (`AI_LIMIT_PER_MINUTE=3`, `AI_LIMIT_PER_DAY=8`).
    - **Gemini Embedding Calls (`log-exercise`)**: `5 req/min`, `12 req/day` (`AI_EMBED_LIMIT_PER_MINUTE=5`, `AI_EMBED_LIMIT_PER_DAY=12`).
-   - **BYOK Users**: Personal Gemini API key is decrypted and authenticated, bypassing platform AI rate limits while retaining edge function burst protection.
+   - **BYOK Users**: Personal Gemini API key is decrypted and authenticated, bypassing platform AI rate limits (3/min, 8/day) while still being subject to all other rate limits: per-function edge burst/daily limits (8/min, 16/day), global per-user minute/daily limits (8/min, 20/day), and platform anti-DDoS limits (100/min).
 
 5. **Tier 5: Domain Business Rules & Meal Type Limits**:
    - **Max 5 Meals per Meal Type per Day**: Enforces a maximum of 5 entries per meal type (`breakfast`, `lunch`, `dinner`, `snack`, `snacks`) per day (`MAX_MEALS_PER_TYPE_PER_DAY=5`).
@@ -45,16 +45,16 @@ All limits are dynamically configurable from Supabase dashboard secrets via `sup
 
 | Scope / Category | Function(s) | Window | Quota | Environment Variable Secret |
 | :--- | :--- | :--- | :--- | :--- |
-| **Gemini AI Vision** | `scan-food` | 1 min / 1 day | `3 / min`, `6 / day` | `AI_LIMIT_PER_MINUTE`, `AI_LIMIT_PER_DAY` |
+| **Gemini AI Analysis** | `scan-food`, `resolve-food` | 1 min / 1 day | `3 / min`, `8 / day` | `AI_LIMIT_PER_MINUTE`, `AI_LIMIT_PER_DAY` |
 | **Gemini Embeddings** | `log-exercise` | 1 min / 1 day | `5 / min`, `12 / day` | `AI_EMBED_LIMIT_PER_MINUTE`, `AI_EMBED_LIMIT_PER_DAY` |
-| **General Edge Calls** | `log-meal`, `log-exercise`, `scan-food` | 1 min / 1 day | `8 / min`, `16 / day` | `EDGE_LIMIT_PER_MINUTE`, `EDGE_LIMIT_PER_DAY` |
+| **General Edge Calls** | `log-meal`, `log-exercise`, `scan-food`, `resolve-food` | 1 min / 1 day | `8 / min`, `16 / day` | `EDGE_LIMIT_PER_MINUTE`, `EDGE_LIMIT_PER_DAY` |
 | **Global Per-User** | All Edge Functions Combined | 1 min / 1 day | `8 / min`, `20 / day` | `USER_GLOBAL_LIMIT_PER_MINUTE`, `USER_GLOBAL_LIMIT_PER_DAY` |
 | **Meal Type Quota** | `log-meal`, DB RPC | Per Day | `Max 5 per type` | `MAX_MEALS_PER_TYPE_PER_DAY` |
 | **Platform Anti-DDoS** | All Edge Functions (All Users) | 1 min | `100 / min` | `GLOBAL_LIMIT_PER_MINUTE` |
 | **Feedback Reports** | `submit-feedback` | 1 day | `10 / day` | `FEEDBACK_LIMIT_PER_DAY` |
 
 ### Standardized `429 Too Many Requests` Contract:
-- All rate-limited responses return `HTTP 429` with `Retry-After: <seconds>` headers and JSON payload containing `retry_after_seconds` and specific reset times, allowing the client to show deterministic countdown timers.
+- All rate-limited responses return `HTTP 429` with `Retry-After: <seconds>` headers and JSON payload containing `retry_after_seconds`, `rate_limited: true`, `is_daily_limit: true` (for daily limits), and specific reset times, allowing the client to show deterministic countdown timers and direct users to Settings to add their own API key.
 
 
 ---

@@ -19,15 +19,17 @@ const globalCacheMap = new Map();
 const userGlobalMinuteCacheMap = new Map();
 const userGlobalDailyCacheMap = new Map();
 const edgeBurstCacheMap = new Map();
+const edgeDailyCacheMap = new Map();
 const aiMinuteCacheMap = new Map();
 const aiDailyCacheMap = new Map();
 
 const globalLimit = parseInt(Deno.env.get('GLOBAL_LIMIT_PER_MINUTE') || '100', 10);
 const userGlobalMinuteLimit = parseInt(Deno.env.get('USER_GLOBAL_LIMIT_PER_MINUTE') || '8', 10);
 const userGlobalDailyLimit = parseInt(Deno.env.get('USER_GLOBAL_LIMIT_PER_DAY') || '20', 10);
-const edgeBurstLimit = parseInt(Deno.env.get('RESOLVE_FOOD_LIMIT_PER_MINUTE') || '10', 10);
+const edgeBurstLimit = parseInt(Deno.env.get('EDGE_LIMIT_PER_MINUTE') || '8', 10);
+const edgeDailyLimit = parseInt(Deno.env.get('EDGE_LIMIT_PER_DAY') || '16', 10);
 const aiLimitMinute = parseInt(Deno.env.get('AI_LIMIT_PER_MINUTE') || '3', 10);
-const aiLimitDay = parseInt(Deno.env.get('AI_LIMIT_PER_DAY') || '6', 10);
+const aiLimitDay = parseInt(Deno.env.get('AI_LIMIT_PER_DAY') || '8', 10);
 
 const globalLimiter = redis ? new Ratelimit({
   redis,
@@ -55,6 +57,13 @@ const edgeBurstLimiter = redis ? new Ratelimit({
   limiter: Ratelimit.slidingWindow(edgeBurstLimit, "1 m"),
   ephemeralCache: edgeBurstCacheMap,
   prefix: "ratelimit:burst:resolve-food",
+}) : null;
+
+const edgeDailyLimiter = redis ? new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(edgeDailyLimit, "1 d"),
+  ephemeralCache: edgeDailyCacheMap,
+  prefix: "ratelimit:edge:resolve-food:day",
 }) : null;
 
 const aiMinuteLimiter = redis ? new Ratelimit({
@@ -242,15 +251,16 @@ Deno.serve(async (req) => {
           userGlobalMinuteLimiter ? userGlobalMinuteLimiter.limit(identifier) : Promise.resolve({ success: true }),
           userGlobalDailyLimiter ? userGlobalDailyLimiter.limit(identifier) : Promise.resolve({ success: true }),
           edgeBurstLimiter ? edgeBurstLimiter.limit(identifier) : Promise.resolve({ success: true }),
+          edgeDailyLimiter ? edgeDailyLimiter.limit(identifier) : Promise.resolve({ success: true }),
         ];
 
         // Only enforce AI quota on free-tier (non-BYOK) users
         if (!customApiKey) {
-          checks.push(aiMinuteLimiter ? aiMinuteLimiter.limit(user.id) : Promise.resolve({ success: true }));
-          checks.push(aiDayLimiter ? aiDayLimiter.limit(user.id) : Promise.resolve({ success: true }));
+          checks.push(aiMinuteLimiter ? aiMinuteLimiter.limit(identifier) : Promise.resolve({ success: true }));
+          checks.push(aiDayLimiter ? aiDayLimiter.limit(identifier) : Promise.resolve({ success: true }));
         }
 
-        const [globalRes, userMinRes, userDayRes, burstRes, aiMinRes, aiDayRes] = await Promise.all(checks);
+        const [globalRes, userMinRes, userDayRes, burstRes, edgeDailyRes, aiMinRes, aiDayRes] = await Promise.all(checks);
 
         if (!globalRes.success) {
           const retryAfter = Math.ceil((globalRes.reset - Date.now()) / 1000);
@@ -272,7 +282,12 @@ Deno.serve(async (req) => {
           const retryAfter = Math.ceil((userDayRes.reset - Date.now()) / 1000);
           const hours = Math.ceil(retryAfter / 3600);
           return new Response(
-            JSON.stringify({ error: `Daily limit reached (${userGlobalDailyLimit} requests/day). Resets in ${hours} hour${hours > 1 ? 's' : ''}.`, retry_after_seconds: retryAfter, rate_limited: true }),
+            JSON.stringify({ 
+              error: `Daily limit reached across app actions (${userGlobalDailyLimit} requests/day). Resets in ${hours} hour${hours > 1 ? 's' : ''}.`, 
+              retry_after_seconds: retryAfter, 
+              rate_limited: true,
+              is_daily_limit: true 
+            }),
             { status: 429, headers: { ...corsHeaders, "Retry-After": retryAfter.toString() } }
           );
         }
@@ -280,7 +295,21 @@ Deno.serve(async (req) => {
         if (!burstRes.success) {
           const retryAfter = Math.ceil((burstRes.reset - Date.now()) / 1000);
           return new Response(
-            JSON.stringify({ error: `Too many food resolution requests. Please wait ${retryAfter}s.`, retry_after_seconds: retryAfter, rate_limited: true }),
+            JSON.stringify({ error: `Too many food resolution requests. Please wait ${retryAfter}s before trying again.`, retry_after_seconds: retryAfter, rate_limited: true }),
+            { status: 429, headers: { ...corsHeaders, "Retry-After": retryAfter.toString() } }
+          );
+        }
+
+        if (!edgeDailyRes.success) {
+          const retryAfter = Math.ceil((edgeDailyRes.reset - Date.now()) / 1000);
+          const hours = Math.ceil(retryAfter / 3600);
+          return new Response(
+            JSON.stringify({ 
+              error: `Daily food resolution limit reached (${edgeDailyLimit} calls/day). Resets in ${hours} hour${hours > 1 ? 's' : ''}.`, 
+              retry_after_seconds: retryAfter, 
+              rate_limited: true,
+              is_daily_limit: true 
+            }),
             { status: 429, headers: { ...corsHeaders, "Retry-After": retryAfter.toString() } }
           );
         }
@@ -288,7 +317,7 @@ Deno.serve(async (req) => {
         if (aiMinRes && !aiMinRes.success) {
           const retryAfter = Math.ceil((aiMinRes.reset - Date.now()) / 1000);
           return new Response(
-            JSON.stringify({ error: `AI resolution rate limit reached. Please wait ${retryAfter}s or add your own Gemini API key.`, retry_after_seconds: retryAfter, rate_limited: true }),
+            JSON.stringify({ error: `AI analysis limit reached (${aiLimitMinute} per minute). Please wait ${retryAfter}s before trying again.`, retry_after_seconds: retryAfter, rate_limited: true }),
             { status: 429, headers: { ...corsHeaders, "Retry-After": retryAfter.toString() } }
           );
         }
@@ -297,7 +326,12 @@ Deno.serve(async (req) => {
           const retryAfter = Math.ceil((aiDayRes.reset - Date.now()) / 1000);
           const hours = Math.ceil(retryAfter / 3600);
           return new Response(
-            JSON.stringify({ error: `Daily AI quota reached (${aiLimitDay}/day). Resets in ${hours} hour${hours > 1 ? 's' : ''}. Add your own API key in Profile to continue unlimited.`, retry_after_seconds: retryAfter, rate_limited: true }),
+            JSON.stringify({ 
+              error: `You've reached your free daily limit of ${aiLimitDay} food analyses. Resets in ${hours} hour${hours > 1 ? 's' : ''}, or add your own API key in Settings to use your personal quota.`, 
+              retry_after_seconds: retryAfter, 
+              rate_limited: true,
+              is_daily_limit: true 
+            }),
             { status: 429, headers: { ...corsHeaders, "Retry-After": retryAfter.toString() } }
           );
         }

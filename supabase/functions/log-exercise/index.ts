@@ -350,7 +350,7 @@ Deno.serve(async (req) => {
           const hours = Math.ceil(retryAfter / 3600);
           return new Response(
             JSON.stringify({ 
-              error: `You've reached your free daily limit of ${aiLimitDay} exercise searches. Resets in ${hours} hour${hours > 1 ? 's' : ''}, or add your own Gemini API key in Settings for unlimited searches.`,
+              error: `You've reached your free daily limit of ${aiLimitDay} exercise searches. Resets in ${hours} hour${hours > 1 ? 's' : ''}, or add your own Gemini API key in Settings to use your personal quota.`,
               retry_after_seconds: retryAfter,
               rate_limited: true,
               is_daily_limit: true

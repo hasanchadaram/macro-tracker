@@ -92,15 +92,32 @@ export function MealReviewModal({
   const tipTimeout1 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimeout2 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const dismissSwipeTip = useCallback((markSeen = true) => {
+    if (tipTimeout1.current) {
+      clearTimeout(tipTimeout1.current);
+      tipTimeout1.current = null;
+    }
+    if (tipTimeout2.current) {
+      clearTimeout(tipTimeout2.current);
+      tipTimeout2.current = null;
+    }
+    tipAnim.value = withTiming(0, { duration: 250, easing: Easing.inOut(Easing.ease) });
+    firstSwipeableRef.current?.close();
+    if (markSeen) {
+      AsyncStorage.setItem('has_seen_swipe_delete_tip', 'true').catch(() => {});
+    }
+  }, []);
+
   React.useEffect(() => {
     if (visible && currentFoods.length > 0) {
       checkSwipeTip();
+    } else {
+      dismissSwipeTip(false);
     }
     return () => {
-      if (tipTimeout1.current) clearTimeout(tipTimeout1.current);
-      if (tipTimeout2.current) clearTimeout(tipTimeout2.current);
+      dismissSwipeTip(false);
     };
-  }, [visible, currentFoods.length]);
+  }, [visible]);
 
   const checkSwipeTip = async () => {
     try {
@@ -111,9 +128,7 @@ export function MealReviewModal({
             firstSwipeableRef.current.openRight();
             tipAnim.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.cubic) });
             tipTimeout2.current = setTimeout(() => {
-              firstSwipeableRef.current?.close();
-              AsyncStorage.setItem('has_seen_swipe_delete_tip', 'true');
-              tipAnim.value = withTiming(0, { duration: 300, easing: Easing.inOut(Easing.ease) });
+              dismissSwipeTip(true);
             }, 2500);
           }
         }, 800);
@@ -175,13 +190,16 @@ export function MealReviewModal({
   );
 
   const handleDeleteItem = useCallback((foodId: string) => {
+    // Immediately dismiss the swipe tip if active
+    dismissSwipeTip(true);
+
     // Immediately close swipeable if active before deleting from state
     swipeableRowRefs.current.get(foodId)?.close();
     swipeableRowRefs.current.delete(foodId);
 
     setCurrentFoods((prev) => prev.filter((f) => f._id !== foodId));
     setOriginalFoods((prev) => prev.filter((f) => f._id !== foodId));
-  }, []);
+  }, [dismissSwipeTip]);
 
   const validFoods = currentFoods.filter(f => (f.calories || 0) > 0 && (f.quantity || 0) > 0);
   const isZeroMeal = validFoods.length === 0 || totals.calories <= 0;
@@ -236,12 +254,11 @@ export function MealReviewModal({
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
         style={styles.overlay}
       >
-        {Platform.OS !== 'ios' && (
-          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        )}
+        <Pressable style={styles.topSpacer} onPress={onClose} />
         <View style={[styles.modalContent, { backgroundColor: cardBg }]}>
           {/* Handle bar */}
           <View style={{ alignItems: 'center', paddingVertical: 16, marginTop: -24 }} {...panResponder.panHandlers}>
@@ -289,12 +306,18 @@ export function MealReviewModal({
           </View>
 
           {/* Foods Table */}
-          <GestureHandlerRootView style={{ flex: 0 }}>
+          <GestureHandlerRootView style={{ flexShrink: 1, minHeight: 120 }}>
             <Animated.View style={[styles.swipeTipBubble, animatedTipStyle]} pointerEvents="none">
               <Text style={styles.swipeTipText}>Swipe left to delete!</Text>
               <View style={styles.swipeTipArrow} />
             </Animated.View>
-            <ScrollView style={styles.foodsList} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.foodsList}
+              contentContainerStyle={{ paddingBottom: 4 }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
               {/* Table Header */}
               <View style={styles.tableHeader}>
                 <Text style={[styles.tableHeaderText, { color: textSecondary, flex: 2 }]}>Food</Text>
@@ -321,6 +344,7 @@ export function MealReviewModal({
                         swipeableRowRefs.current.delete(food._id);
                       }
                     }}
+                    onSwipeableWillOpen={() => dismissSwipeTip(true)}
                     renderRightActions={() => (
                       <Pressable
                         style={styles.deleteButton}
@@ -347,6 +371,7 @@ export function MealReviewModal({
                           onChangeText={(v) => handleQuantityChange(food._id, v)}
                           keyboardType="decimal-pad"
                           selectTextOnFocus
+                          returnKeyType="done"
                         />
                         <Text style={[styles.unitText, { color: textSecondary }]}>{food.unit}</Text>
                       </View>
@@ -421,11 +446,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
+  topSpacer: {
+    flex: 1,
+  },
   modalContent: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
-    maxHeight: '90%',
+    paddingBottom: Platform.OS === 'ios' ? 24 : 16,
+    maxHeight: '94%',
+    width: '100%',
   },
   header: {
     flexDirection: 'row',
@@ -463,6 +493,7 @@ const styles = StyleSheet.create({
   },
   foodsList: {
     maxHeight: 280,
+    flexShrink: 1,
     marginBottom: 12,
   },
   tableHeader: {

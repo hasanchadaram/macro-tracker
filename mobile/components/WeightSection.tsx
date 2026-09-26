@@ -5,15 +5,21 @@ import * as Haptics from 'expo-haptics';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { WeightLog } from '@/lib/types';
 
+import { getLocalDateString } from '@/lib/dateUtils';
+
 interface WeightSectionProps {
   latestLog: WeightLog | null;
   isFutureDate?: boolean;
+  dateStr?: string;
   onAddPress: () => void;
 }
 
-export function WeightSection({ latestLog, isFutureDate = false, onAddPress }: WeightSectionProps) {
+export function WeightSection({ latestLog, isFutureDate = false, dateStr, onAddPress }: WeightSectionProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+
+  const todayStr = getLocalDateString();
+  const isToday = !dateStr || dateStr === todayStr;
 
   const cardBg = isDark ? '#1E293B' : '#FFFFFF';
   const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
@@ -54,7 +60,9 @@ export function WeightSection({ latestLog, isFutureDate = false, onAddPress }: W
                 {latestLog.weight} <Text style={[styles.unitText, { color: textSecondary }]}>kg</Text>
               </Text>
               <Text style={[styles.timeText, { color: textSecondary }]}>
-                Logged today at {new Date(latestLog.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {isToday
+                  ? `Logged today at ${new Date(latestLog.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : 'Logged for this day'}
               </Text>
             </View>
             <View style={styles.logRight}>
@@ -76,7 +84,11 @@ export function WeightSection({ latestLog, isFutureDate = false, onAddPress }: W
               <Ionicons name={isFutureDate ? "calendar-outline" : "scale-outline"} size={24} color={textSecondary} />
             </View>
             <Text style={[styles.emptyText, { color: textSecondary }]}>
-              {isFutureDate ? "Weight cannot be logged for future dates." : "No weight logged today."}
+              {isFutureDate
+                ? "Weight cannot be logged for future dates."
+                : isToday
+                ? "No weight logged today."
+                : "No weight logged for this day."}
             </Text>
             <Text style={[styles.emptySubText, { color: isFutureDate ? textSecondary : activeColor }]}>
               {isFutureDate ? "Available on this day" : "Tap to log"}

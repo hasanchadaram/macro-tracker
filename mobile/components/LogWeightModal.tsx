@@ -13,10 +13,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
+import { getLocalDateString } from '@/lib/dateUtils';
+
 interface LogWeightModalProps {
   visible: boolean;
   initialWeight?: number | null;
   isEditing?: boolean;
+  dateStr?: string;
   onClose: () => void;
   onLogWeight: (weight: number) => Promise<void>;
 }
@@ -25,6 +28,7 @@ export function LogWeightModal({
   visible,
   initialWeight,
   isEditing,
+  dateStr,
   onClose,
   onLogWeight,
 }: LogWeightModalProps) {
@@ -35,6 +39,36 @@ export function LogWeightModal({
   const [isProcessing, setIsProcessing] = useState(false);
 
   const isUpdating = isEditing || (initialWeight !== null && initialWeight !== undefined);
+
+  const todayStr = getLocalDateString();
+  const isToday = !dateStr || dateStr === todayStr;
+
+  let title = isUpdating ? "Update Today's Weight" : "Log Today's Weight";
+  let tip = isUpdating
+    ? "Entering a new value will update today's log and recalculate your progress."
+    : "Tip: Track early morning before drinking water for best accuracy.";
+
+  if (!isToday && dateStr) {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = getLocalDateString(yesterday);
+    const isYesterday = dateStr === yesterdayStr;
+
+    if (isYesterday) {
+      title = isUpdating ? "Update Yesterday's Weight" : "Log Yesterday's Weight";
+      tip = isUpdating
+        ? "Entering a new value will update yesterday's log and recalculate your progress."
+        : "Tip: Track early morning before drinking water for best accuracy.";
+    } else {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const dateObj = new Date(y, m - 1, d);
+      const formattedDate = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      title = isUpdating ? `Update Weight (${formattedDate})` : `Log Weight (${formattedDate})`;
+      tip = isUpdating
+        ? `Entering a new value will update the log for ${formattedDate} and recalculate your progress.`
+        : "Tip: Track early morning before drinking water for best accuracy.";
+    }
+  }
 
   useEffect(() => {
     if (visible) {
@@ -84,7 +118,7 @@ export function LogWeightModal({
         <View style={[styles.modalContent, { backgroundColor: cardBg }]}>
           <View style={styles.header}>
             <Text style={[styles.title, { color: textPrimary }]}>
-              {isUpdating ? "Update Today's Weight" : "Log Today's Weight"}
+              {title}
             </Text>
             <Pressable onPress={handleClose} style={styles.closeBtn}>
               <Ionicons name="close" size={24} color={textPrimary} />
@@ -105,9 +139,7 @@ export function LogWeightModal({
             <View style={styles.tipContainer}>
               <Ionicons name="information-circle-outline" size={16} color={textSecondary} />
               <Text style={[styles.tipText, { color: textSecondary }]}>
-                {isUpdating
-                  ? "Entering a new value will update today's log and recalculate your progress."
-                  : "Tip: Track early morning before drinking water for best accuracy."}
+                {tip}
               </Text>
             </View>
           </View>

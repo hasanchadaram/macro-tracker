@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '@/lib/supabase';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAlert } from '@/components/ui/CustomAlert';
 import { OnboardingModal } from '@/components/OnboardingModal';
 import { BYOKModal } from '@/components/BYOKModal';
+import { ModelPickerModal } from '@/components/ModelPickerModal';
 import { TipsModal } from '@/components/TipsModal';
 import { FeedbackModal } from '@/components/FeedbackModal';
 import { WeeklyCheckInModal } from '@/components/WeeklyCheckInModal';
@@ -17,6 +18,7 @@ import AvatarPickerModal from '@/components/AvatarPickerModal';
 import EditNameModal from '@/components/EditNameModal';
 import { AttentionBeacon } from '@/components/ui/AttentionBeacon';
 import { getAvatarById } from '@/constants/avatars';
+import { getGeminiModelById } from '@/constants/aiModels';
 import { evaluateWeeklyCheckIn } from '@/lib/nutrition';
 import { getLocalDateString } from '@/lib/dateUtils';
 import Constants from 'expo-constants';
@@ -27,6 +29,7 @@ import { checkForAppUpdate, openPlayStore } from '@/lib/versionUtils';
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ openByok?: string }>();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const { showAlert } = useAlert();
@@ -38,6 +41,7 @@ export default function ProfileScreen() {
 
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [byokVisible, setByokVisible] = useState(false);
+  const [modelPickerVisible, setModelPickerVisible] = useState(false);
   const [tipsVisible, setTipsVisible] = useState(false);
   const [feedbackVisible, setFeedbackVisible] = useState(false);
   const [editNameVisible, setEditNameVisible] = useState(false);
@@ -47,7 +51,7 @@ export default function ProfileScreen() {
   const [googleAvatarUrl, setGoogleAvatarUrl] = useState<string | null>(null);
   const [hasSeenTips, setHasSeenTips] = useState(true);
   const [hasSeenByok, setHasSeenByok] = useState(true);
-  const [aiSettings, setAiSettings] = useState({ byok_enabled: true, has_custom_key: false });
+  const [aiSettings, setAiSettings] = useState<{ byok_enabled: boolean; has_custom_key: boolean; selected_model?: string | null }>({ byok_enabled: true, has_custom_key: false, selected_model: null });
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [onboardingInitialStep, setOnboardingInitialStep] = useState<'intro' | 'review'>('intro');
@@ -61,8 +65,7 @@ export default function ProfileScreen() {
   const [isSavingCheckIn, setIsSavingCheckIn] = useState(false);
   const [isCheckInReadOnly, setIsCheckInReadOnly] = useState(false);
 
-  const appVersion = Constants.expoConfig?.version || '1.1.2';
-  const appVersionCode = Constants.expoConfig?.android?.versionCode || 10;
+  const appVersion = Constants.expoConfig?.version || '1.1.4';
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   const handleCheckForUpdates = async () => {
@@ -83,26 +86,24 @@ export default function ProfileScreen() {
 
       if (result.hasUpdate && result.latestVersion) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        const buildInfo = result.latestVersionCode ? ` (Build ${result.latestVersionCode})` : '';
-        const currentBuildInfo = result.currentVersionCode ? ` (Build ${result.currentVersionCode})` : '';
         const notes = result.releaseNotes ? `\n\nWhat's New:\n${result.releaseNotes}` : '';
 
         showAlert(
           'Update Available! 🚀',
-          `A new version of Day Fuel is available!\n\n• Current: v${result.currentVersion}${currentBuildInfo}\n• Latest: v${result.latestVersion}${buildInfo}${notes}`,
+          `A new version of Day Fuel is available!\n\n• Current: v${result.currentVersion}\n• Latest: v${result.latestVersion}${notes}`,
           [
-            { text: 'Later', style: 'cancel' },
             {
               text: 'Update from Play Store',
               onPress: () => openPlayStore(result.playStoreUrl),
             },
+            { text: 'Later', style: 'cancel' },
           ]
         );
       } else {
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         showAlert(
           "You're Up to Date! ✨",
-          `You are running the latest version of Day Fuel (v${result.currentVersion}, Build ${result.currentVersionCode}).`
+          `You are running the latest version of Day Fuel (v${result.currentVersion}).`
         );
       }
     } catch (e: any) {
@@ -119,6 +120,12 @@ export default function ProfileScreen() {
     loadByokState();
     fetchProfile();
   }, []);
+
+  useEffect(() => {
+    if (params.openByok === 'true') {
+      setByokVisible(true);
+    }
+  }, [params.openByok]);
 
   const hydrateProfileFromCache = async () => {
     try {
@@ -866,19 +873,61 @@ export default function ProfileScreen() {
               >
                 <View style={styles.listItemLeft}>
                   <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-                    <AttentionBeacon color="#10B981" size={28} active={!aiSettings.has_custom_key && !hasSeenByok}>
+                    <AttentionBeacon color="#10B981" size={28} active={!aiSettings.has_custom_key && !hasSeenByok} showHalo={false}>
                       <Ionicons name="key-outline" size={20} color="#10B981" />
                     </AttentionBeacon>
                   </View>
                   <View style={styles.itemTextContainer}>
                     <Text style={[styles.listItemTitle, { color: textPrimary }]}>Custom API Key</Text>
                     <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
-                      {aiSettings.has_custom_key ? 'Key is configured' : 'Bring your own Gemini key'}
+                      {aiSettings.has_custom_key ? 'Key active • Tap to manage or remove' : 'Bring your own Gemini key'}
                     </Text>
                   </View>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={textSecondary} />
               </Pressable>
+
+              <View style={[styles.divider, { backgroundColor: borderColor }]} />
+
+              {/* AI Model Row */}
+              {aiSettings.has_custom_key ? (
+                <Pressable 
+                  style={styles.listItem}
+                  onPress={() => setModelPickerVisible(true)}
+                >
+                  <View style={styles.listItemLeft}>
+                    <View style={[styles.iconContainer, { backgroundColor: 'rgba(99, 102, 241, 0.15)' }]}>
+                      <Ionicons name="hardware-chip-outline" size={20} color="#6366F1" />
+                    </View>
+                    <View style={styles.itemTextContainer}>
+                      <Text style={[styles.listItemTitle, { color: textPrimary }]}>AI Model</Text>
+                      <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
+                        {getGeminiModelById(aiSettings.selected_model).name}
+                        {getGeminiModelById(aiSettings.selected_model).badge ? ` (${getGeminiModelById(aiSettings.selected_model).badge})` : ''} • Tap to switch
+                      </Text>
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={textSecondary} />
+                </Pressable>
+              ) : (
+                <Pressable 
+                  style={styles.listItem}
+                  onPress={handleOpenByok}
+                >
+                  <View style={styles.listItemLeft}>
+                    <View style={[styles.iconContainer, { backgroundColor: isDark ? 'rgba(148, 163, 184, 0.1)' : 'rgba(100, 116, 139, 0.1)' }]}>
+                      <Ionicons name="hardware-chip-outline" size={20} color={textSecondary} />
+                    </View>
+                    <View style={styles.itemTextContainer}>
+                      <Text style={[styles.listItemTitle, { color: textSecondary }]}>AI Model</Text>
+                      <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
+                        Unlock model selection with custom API key
+                      </Text>
+                    </View>
+                  </View>
+                  <Ionicons name="lock-closed-outline" size={18} color={textSecondary} />
+                </Pressable>
+              )}
             </View>
           </View>
         )}
@@ -894,7 +943,7 @@ export default function ProfileScreen() {
             >
               <View style={styles.listItemLeft}>
                 <View style={[styles.iconContainer, { backgroundColor: 'rgba(234, 179, 8, 0.15)' }]}>
-                  <AttentionBeacon color="#EAB308" size={28} active={!hasSeenTips}>
+                  <AttentionBeacon color="#EAB308" size={28} active={!hasSeenTips} showHalo={false}>
                     <Ionicons name={!hasSeenTips ? "bulb" : "bulb-outline"} size={20} color="#EAB308" />
                   </AttentionBeacon>
                 </View>
@@ -928,37 +977,6 @@ export default function ProfileScreen() {
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color={textSecondary} />
-            </Pressable>
-
-            <View style={[styles.divider, { backgroundColor: borderColor }]} />
-
-            <Pressable 
-              style={styles.listItem}
-              onPress={handleCheckForUpdates}
-              disabled={isCheckingUpdate}
-            >
-              <View style={styles.listItemLeft}>
-                <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-                  {isCheckingUpdate ? (
-                    <ActivityIndicator size="small" color="#10B981" />
-                  ) : (
-                    <Ionicons name="cloud-download-outline" size={20} color="#10B981" />
-                  )}
-                </View>
-                <View style={styles.itemTextContainer}>
-                  <Text style={[styles.listItemTitle, { color: textPrimary }]}>Check for Updates</Text>
-                  <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
-                    {isCheckingUpdate
-                      ? 'Checking latest release...'
-                      : `Version ${appVersion} (Build ${appVersionCode})`}
-                  </Text>
-                </View>
-              </View>
-              {isCheckingUpdate ? (
-                <ActivityIndicator size="small" color="#10B981" />
-              ) : (
-                <Ionicons name="chevron-forward" size={20} color={textSecondary} />
-              )}
             </Pressable>
           </View>
         </View>
@@ -1004,7 +1022,7 @@ export default function ProfileScreen() {
                   <Text style={[styles.listItemSubtitle, { color: textSecondary }]}>
                     {isCheckingUpdate
                       ? 'Checking latest release...'
-                      : `Version ${appVersion} (Build ${appVersionCode})`}
+                      : `Version ${appVersion}`}
                   </Text>
                 </View>
               </View>
@@ -1070,7 +1088,7 @@ export default function ProfileScreen() {
 
         <View style={styles.versionContainer}>
           <Text style={[styles.versionText, { color: textSecondary }]}>
-            Day Fuel v{appVersion} (Build {appVersionCode})
+            Day Fuel v{appVersion}
           </Text>
         </View>
       </ScrollView>
@@ -1088,6 +1106,16 @@ export default function ProfileScreen() {
         hasCustomKey={aiSettings.has_custom_key}
         onClose={() => setByokVisible(false)}
         onSaveSuccess={fetchAiSettings}
+      />
+
+      <ModelPickerModal
+        visible={modelPickerVisible}
+        onClose={() => setModelPickerVisible(false)}
+        selectedModelId={aiSettings.selected_model}
+        onModelSelected={(modelId) => {
+          setAiSettings((prev) => ({ ...prev, selected_model: modelId }));
+          fetchAiSettings();
+        }}
       />
 
       <TipsModal 

@@ -42,4 +42,10 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/privacy-policy/index.ts"
 
+[functions.resolve-food]
+enabled = true
+verify_jwt = true
+import_map = "./functions/resolve-food/deno.json"
+entrypoint = "./functions/resolve-food/index.ts"
+
 

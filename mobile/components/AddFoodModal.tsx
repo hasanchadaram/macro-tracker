@@ -61,44 +61,67 @@ export function AddFoodModal({
   // Personal food library hook
   const { myFoods, topFoods, createFood, searchGlobalFoods, refreshFoods } = useMyFoods();
 
-  // Identify all active registered personal foods present in current description
-  // If the user modifies even a single character of @FoodName, it automatically unregisters
+  // Identify all active registered personal foods present in current description (@FoodName or my FoodName)
+  // If the user modifies even a single character of the food name, it automatically unregisters
   const registeredFoods = React.useMemo(() => {
-    if (!description || !description.includes('@')) return [];
-    return myFoods.filter((f) => {
-      const tag = `@${f.name.toLowerCase()}`;
-      return description.toLowerCase().includes(tag);
+    if (!description) return [];
+    const lower = description.toLowerCase();
+    const sorted = [...myFoods].sort((a, b) => b.name.length - a.name.length);
+    return sorted.filter((f) => {
+      const escaped = f.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`(?:@|\\bmy\\s+)${escaped}(?!\\w)`, 'i');
+      return pattern.test(lower);
     });
   }, [description, myFoods]);
 
-  // Detect active @mention query anywhere at current end of text, gracefully ignoring already registered @food tags
+  // Detect active @ or "my " mention query anywhere at current end of text, gracefully ignoring already registered food tags
   const getActiveMentionInfo = (
     text: string,
     activeFoods: UserFood[]
-  ): { query: string; rawQuery: string; startIndex: number } | null => {
+  ): { type: 'at' | 'my'; query: string; rawQuery: string; startIndex: number; queryStartIndex: number } | null => {
     const lastAtIndex = text.lastIndexOf('@');
-    if (lastAtIndex === -1) return null;
 
-    // If user explicitly dismissed suggestions for this specific '@', don't show it
-    if (dismissedMentionIndex === lastAtIndex) return null;
+    // Find last "\bmy\s+" match
+    const myMatches = [...text.matchAll(/\bmy\s+/gi)];
+    const lastMyMatch = myMatches.length > 0 ? myMatches[myMatches.length - 1] : null;
 
-    const textFromAt = text.slice(lastAtIndex);
+    let triggerType: 'at' | 'my' | null = null;
+    let triggerIndex = -1;
+    let queryStartIndex = -1;
 
-    // If the text from this '@' starts with any already-registered food name, it's completed!
+    if (lastAtIndex !== -1 && (!lastMyMatch || lastAtIndex > (lastMyMatch.index ?? -1))) {
+      triggerType = 'at';
+      triggerIndex = lastAtIndex;
+      queryStartIndex = lastAtIndex + 1;
+    } else if (lastMyMatch && lastMyMatch.index !== undefined) {
+      triggerType = 'my';
+      triggerIndex = lastMyMatch.index;
+      queryStartIndex = lastMyMatch.index + lastMyMatch[0].length;
+    }
+
+    if (!triggerType || triggerIndex === -1) return null;
+
+    // If user explicitly dismissed suggestions for this specific trigger, don't show it
+    if (dismissedMentionIndex === triggerIndex) return null;
+
+    const textFromTrigger = text.slice(triggerIndex);
+
+    // If the text from this trigger starts with any already-registered food name, it's completed!
     const isCompleted = activeFoods.some((food) => {
-      const tag = `@${food.name.toLowerCase()}`;
-      const lowerFromAt = textFromAt.toLowerCase();
+      const lowerName = food.name.toLowerCase();
+      const lowerFrom = textFromTrigger.toLowerCase();
+      const tag = triggerType === 'at' ? `@${lowerName}` : `my ${lowerName}`;
       return (
-        lowerFromAt === tag ||
-        lowerFromAt.startsWith(`${tag} `) ||
-        lowerFromAt.startsWith(`${tag},`) ||
-        lowerFromAt.startsWith(`${tag}.`)
+        lowerFrom === tag ||
+        lowerFrom.startsWith(`${tag} `) ||
+        lowerFrom.startsWith(`${tag},`) ||
+        lowerFrom.startsWith(`${tag}.`)
       );
     });
 
     if (isCompleted) return null;
 
-    const queryPart = textFromAt.slice(1); // string after '@'
+    const queryPart = text.slice(queryStartIndex);
 
     // If query has newline, sentence-ending punctuation, or is longer than 30 chars, don't show mention suggestions
     if (queryPart.includes('\n') || /[.!?]/.test(queryPart) || queryPart.length > 30) {
@@ -108,17 +131,20 @@ export function AddFoodModal({
     // If query contains a space and no personal foods match or start with the query, dismiss it
     if (queryPart.includes(' ')) {
       const qTrim = queryPart.trim().toLowerCase();
+      const qWords = qTrim.split(/\s+/).filter(Boolean);
       const hasMatch = myFoods.some((f) => {
         const name = f.name.toLowerCase();
-        return name.startsWith(qTrim) || name.includes(qTrim);
+        return name.includes(qTrim) || (qWords.length > 0 && qWords.every((w) => name.includes(w)));
       });
       if (!hasMatch) return null;
     }
 
     return {
+      type: triggerType,
       query: queryPart.trim().toLowerCase(),
       rawQuery: queryPart,
-      startIndex: lastAtIndex,
+      startIndex: triggerIndex,
+      queryStartIndex,
     };
   };
 
@@ -131,6 +157,8 @@ export function AddFoodModal({
         const q = mentionInfo.query.toLowerCase().trim();
         const name = f.name.toLowerCase();
         if (name.includes(q)) return true;
+        const qWords = q.split(/\s+/).filter(Boolean);
+        if (qWords.length > 1 && qWords.every((w) => name.includes(w))) return true;
         // Plural/singular normalization (e.g. 'eggs' -> 'egg', 'berries' -> 'berry', 'tomatoes' -> 'tomato')
         const stem = q.endsWith('ies')
           ? q.slice(0, -3) + 'y'
@@ -148,14 +176,26 @@ export function AddFoodModal({
   const handleSelectMention = (food: UserFood) => {
     Haptics.selectionAsync();
     if (!mentionInfo) return;
-    const beforeAt = description.slice(0, mentionInfo.startIndex);
+    const beforeTrigger = description.slice(0, mentionInfo.startIndex);
     const queryLen = mentionInfo.rawQuery ? mentionInfo.rawQuery.length : 0;
-    const afterQuery = description.slice(mentionInfo.startIndex + 1 + queryLen);
-    const updated = `${beforeAt}@${food.name} ${afterQuery.trimStart()}`;
+    const afterQuery = description.slice(mentionInfo.queryStartIndex + queryLen);
+
+    let insertTag = '';
+    if (mentionInfo.type === 'at') {
+      insertTag = `@${food.name}`;
+    } else {
+      // Preserve "my " casing (e.g. "my " or "My ")
+      const userTypedMy = description.slice(mentionInfo.startIndex, mentionInfo.queryStartIndex);
+      insertTag = `${userTypedMy}${food.name}`;
+    }
+
+    const updated = `${beforeTrigger}${insertTag} ${afterQuery.trimStart()}`;
     handleDescriptionChange(updated);
   };
 
-  // Helper to render formatted text with registered @FoodName tags highlighted in emerald green
+  // Helper to render formatted text with registered personal food tags highlighted in emerald green
+  // For "@Food", the entire "@Food" is highlighted green
+  // For "my Food", "my " remains normal color and only "Food" is highlighted green
   const renderFormattedDescription = (
     text: string,
     activeFoods: UserFood[],
@@ -166,29 +206,50 @@ export function AddFoodModal({
       return <Text style={{ color: primaryColor }}>{text}</Text>;
     }
 
-    const escapedTags = activeFoods
-      .map((f) => `@${f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
-      .join('|');
-    const regex = new RegExp(`(${escapedTags})`, 'i');
+    // Sort active foods by name length descending to avoid partial word collisions
+    const sorted = [...activeFoods].sort((a, b) => b.name.length - a.name.length);
+    const patterns = sorted.map((f) => {
+      const esc = f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return `@${esc}|\\bmy\\s+${esc}`;
+    });
 
+    const regex = new RegExp(`(${patterns.join('|')})`, 'gi');
     const parts = text.split(regex);
+
     return parts.map((part, index) => {
-      const isRegistered = activeFoods.some(
-        (f) => part.toLowerCase() === `@${f.name.toLowerCase()}`
-      );
-      if (isRegistered) {
-        return (
-          <Text
-            key={index}
-            style={{
-              color: '#10B981',
-              fontWeight: '700',
-            }}
-          >
-            {part}
-          </Text>
+      if (!part) return null;
+
+      // Check if part matches @Food
+      if (part.startsWith('@')) {
+        const isRegistered = activeFoods.some(
+          (f) => part.toLowerCase() === `@${f.name.toLowerCase()}`
         );
+        if (isRegistered) {
+          return (
+            <Text key={index} style={{ color: '#10B981', fontWeight: '700' }}>
+              {part}
+            </Text>
+          );
+        }
       }
+
+      // Check if part matches "my Food"
+      const myMatch = part.match(/^(\bmy\s+)(.*)$/i);
+      if (myMatch) {
+        const foodNameMatched = myMatch[2];
+        const isRegistered = activeFoods.some(
+          (f) => foodNameMatched.toLowerCase() === f.name.toLowerCase()
+        );
+        if (isRegistered) {
+          return (
+            <React.Fragment key={index}>
+              <Text style={{ color: primaryColor }}>{myMatch[1]}</Text>
+              <Text style={{ color: '#10B981', fontWeight: '700' }}>{foodNameMatched}</Text>
+            </React.Fragment>
+          );
+        }
+      }
+
       return (
         <Text key={index} style={{ color: primaryColor }}>
           {part}
@@ -237,7 +298,7 @@ export function AddFoodModal({
           setImageUri(draft.imageUri);
           setImageBase64(undefined);
           setMode('describe');
-        } else if (mealTypeChanged) {
+        } else {
           setDescription('');
           setImageUri(undefined);
           setImageBase64(undefined);
@@ -330,10 +391,12 @@ export function AddFoodModal({
 
   const handleClose = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Flush any pending text changes immediately before closing without wiping state
+    // Flush any pending text changes immediately before closing only if content actually exists
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
-      saveMealDraft(mealType, { description, imageUri });
+      if (description.trim() || imageUri) {
+        saveMealDraft(mealType, { description: description.trim(), imageUri });
+      }
     }
     onClose();
   };
@@ -696,7 +759,7 @@ export function AddFoodModal({
                 <View style={[styles.mentionContainer, { backgroundColor: buttonBg, borderColor }]}>
                   <View style={styles.mentionHeader}>
                     <View style={styles.mentionHeaderLeft}>
-                      <Ionicons name="at" size={13} color="#10B981" />
+                      <Ionicons name={mentionInfo.type === 'at' ? 'at' : 'bookmark-outline'} size={13} color="#10B981" />
                       <Text style={[styles.mentionHeaderText, { color: textSecondary }]}>
                         Insert from My Foods {mentionInfo.query ? `for "${mentionInfo.query}"` : ''}
                       </Text>
@@ -754,9 +817,9 @@ export function AddFoodModal({
                 >
                   <Ionicons name="sparkles-outline" size={14} color="#10B981" />
                   <Text style={[styles.formatHintText, { color: textSecondary }]}>
-                    Format: Type amount before <Text style={{ color: '#10B981', fontWeight: '600' }}>@food</Text> (e.g.{' '}
+                    Format: Type amount before <Text style={{ color: '#10B981', fontWeight: '600' }}>@food</Text> or <Text style={{ color: textPrimary, fontWeight: '600' }}>my <Text style={{ color: '#10B981' }}>food</Text></Text> (e.g.{' '}
                     <Text style={{ color: textPrimary, fontWeight: '500' }}>2 @Medium Egg</Text> or{' '}
-                    <Text style={{ color: textPrimary, fontWeight: '500' }}>150g @Rice</Text>)
+                    <Text style={{ color: textPrimary, fontWeight: '500' }}>2 of my Medium Egg</Text>)
                   </Text>
                   <Pressable onPress={dismissFormatHint} hitSlop={8} style={styles.dismissHintBtn}>
                     <Ionicons name="close" size={16} color={textSecondary} />
@@ -774,12 +837,13 @@ export function AddFoodModal({
                   ]}
                   placeholder={
                     hasImage
-                      ? "Optional: e.g. 2 @Medium Egg or 'I ate half of this'..."
-                      : "e.g. 2 @Medium Egg and 1 slice toast, or 150g @Rice"
+                      ? "Optional: e.g. 2 @Medium Egg, 2 of my Medium Egg, or 'I ate half'..."
+                      : "e.g. 2 @Medium Egg, 2 of my Medium Egg, or 150g my Rice"
                   }
                   placeholderTextColor={textSecondary}
                   multiline
                   maxLength={160}
+                  autoCapitalize="none"
                   onChangeText={handleDescriptionChange}
                   autoFocus={!hasImage}
                   onFocus={() => {

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -11,12 +11,15 @@ import {
   Platform,
   ActivityIndicator,
   Image,
+  Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAlert } from '@/components/ui/CustomAlert';
 import { supabase } from '@/lib/supabase';
 import type { CreateFoodParams } from '@/hooks/useMyFoods';
 import type { GlobalFood, NutritionPer100g, FoodIngredient } from '@/lib/types';
@@ -47,6 +50,8 @@ export function CreateFoodModal({
   onSave,
   searchGlobalFoods,
 }: CreateFoodModalProps) {
+  const router = useRouter();
+  const { showAlert } = useAlert();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -55,6 +60,23 @@ export function CreateFoodModal({
   const [imageUri, setImageUri] = useState<string | undefined>();
   const [isResolving, setIsResolving] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [hasCustomKey, setHasCustomKey] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      const checkKey = async () => {
+        try {
+          const { data } = await supabase.rpc('get_ai_settings');
+          if (data?.has_custom_key) {
+            setHasCustomKey(true);
+          }
+        } catch {
+          // ignore
+        }
+      };
+      checkKey();
+    }
+  }, [visible]);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -111,9 +133,16 @@ export function CreateFoodModal({
   };
 
   const handleClose = () => {
+    Keyboard.dismiss();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     reset();
     onClose();
+  };
+
+  const handleBackToChoose = () => {
+    Keyboard.dismiss();
+    Haptics.selectionAsync();
+    setStep('choose');
   };
 
   // ── Photo handling (same as AddFoodModal) ───────────────────────────
@@ -133,26 +162,30 @@ export function CreateFoodModal({
   const handleCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      alert('Camera permission needed');
+      showAlert('Permission Required', 'Camera permission is needed to take a food photo.');
       return;
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 1 });
     if (!result.canceled && result.assets[0].uri) {
       await processImage(result.assets[0].uri);
-      setStep('photo');
+      if (step === 'choose') {
+        setStep('photo');
+      }
     }
   };
 
   const handleGallery = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      alert('Gallery permission needed');
+      showAlert('Permission Required', 'Gallery permission is needed to select a food photo.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
     if (!result.canceled && result.assets[0].uri) {
       await processImage(result.assets[0].uri);
-      setStep('photo');
+      if (step === 'choose') {
+        setStep('photo');
+      }
     }
   };
 
@@ -177,7 +210,10 @@ export function CreateFoodModal({
             if (response.success && response.data) {
               resolve(response.data as ResolvedFood);
             } else {
-              reject(new Error(response.error || 'Failed to resolve food'));
+              const err: any = new Error(response.error || 'Failed to resolve food');
+              err.is_daily_limit = response.is_daily_limit;
+              err.rate_limited = response.rate_limited;
+              reject(err);
             }
           } catch {
             reject(new Error('Invalid response'));
@@ -225,7 +261,42 @@ export function CreateFoodModal({
         setStep('review');
       }
     } catch (err: any) {
-      alert(err.message || 'Failed to analyze food');
+      if (hasCustomKey) {
+        showAlert(
+          'Food Analysis Failed',
+          `${err.message || 'Failed to analyze food.'}\n\nYou can wait a moment and try again, or switch to a different AI model in your Profile settings.`,
+          [
+            {
+              text: 'Change Model',
+              onPress: () => {
+                handleClose();
+                router.push('/settings');
+              },
+            },
+            { text: 'OK', style: 'cancel' },
+          ]
+        );
+      } else {
+        const isDaily = err?.is_daily_limit || err.message?.includes('daily limit') || err.message?.includes('Daily AI quota') || err.message?.includes('add your own API key');
+        if (isDaily) {
+          showAlert(
+            'Daily Limit Reached',
+            err.message || 'Daily limit reached.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Settings',
+                onPress: () => {
+                  handleClose();
+                  router.push('/settings');
+                },
+              },
+            ]
+          );
+          return;
+        }
+        showAlert('Food Analysis Failed', err.message || 'Failed to analyze food.');
+      }
     } finally {
       setIsResolving(false);
     }
@@ -341,9 +412,13 @@ export function CreateFoodModal({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <KeyboardAvoidingView
+        key={step}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+        enabled={step !== 'choose'}
         style={styles.overlay}
       >
+        <Pressable style={styles.topSpacer} onPress={handleClose} />
         <View style={[styles.modalContent, { backgroundColor: cardBg }]}>
           {/* Header */}
           <View style={styles.header}>
@@ -354,14 +429,14 @@ export function CreateFoodModal({
                step === 'search' ? 'Start from Existing' :
                'Review & Save'}
             </Text>
-            <Pressable onPress={handleClose}>
+            <Pressable onPress={handleClose} hitSlop={8}>
               <Ionicons name="close" size={24} color={textSecondary} />
             </Pressable>
           </View>
 
           {/* ── Step: Choose Method ──────────────────────────────────── */}
           {step === 'choose' && (
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={styles.optionsGrid}>
                 <Pressable
                   style={[styles.optionCard, { backgroundColor: buttonBg, borderColor }]}
@@ -419,7 +494,11 @@ export function CreateFoodModal({
 
           {/* ── Step: Describe ──────────────────────────────────────── */}
           {step === 'describe' && (
-            <View style={styles.stepContainer}>
+            <ScrollView 
+              showsVerticalScrollIndicator={false} 
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.stepContainer}
+            >
               <Text style={[styles.hint, { color: textSecondary }]}>
                 Describe the food item — what it is, how it's prepared
               </Text>
@@ -433,14 +512,49 @@ export function CreateFoodModal({
                 maxLength={200}
                 autoFocus
               />
+
+              {/* Attached Image or Attach Photo Buttons */}
+              {imageUri ? (
+                <View style={styles.attachedImageWrapper}>
+                  <Image source={{ uri: imageUri }} style={styles.attachedImageThumbnail} />
+                  <Pressable
+                    style={styles.removeImageButton}
+                    onPress={() => setImageUri(undefined)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove attached photo"
+                  >
+                    <Ionicons name="close-circle" size={24} color="#EF4444" />
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={styles.attachPhotoRow}>
+                  <Pressable
+                    style={[styles.attachPhotoBtn, { backgroundColor: buttonBg, borderColor }]}
+                    onPress={handleCamera}
+                  >
+                    <Ionicons name="camera-outline" size={18} color="#10B981" />
+                    <Text style={[styles.attachPhotoBtnText, { color: textPrimary }]}>Take Photo</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={[styles.attachPhotoBtn, { backgroundColor: buttonBg, borderColor }]}
+                    onPress={handleGallery}
+                  >
+                    <Ionicons name="images-outline" size={18} color="#3B82F6" />
+                    <Text style={[styles.attachPhotoBtnText, { color: textPrimary }]}>Choose Photo</Text>
+                  </Pressable>
+                </View>
+              )}
+
               <View style={styles.actionRow}>
-                <Pressable style={[styles.backBtn, { borderColor }]} onPress={() => setStep('choose')}>
+                <Pressable style={[styles.backBtn, { borderColor }]} onPress={handleBackToChoose}>
                   <Text style={[styles.backBtnText, { color: textSecondary }]}>Back</Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.analyzeBtn, !description.trim() && styles.analyzeBtnDisabled]}
-                  onPress={() => handleResolve(description.trim(), undefined, 'describe')}
-                  disabled={!description.trim() || isResolving}
+                  style={[styles.analyzeBtn, (!description.trim() && !imageUri) && styles.analyzeBtnDisabled]}
+                  onPress={() => handleResolve(description.trim() || undefined, imageUri, imageUri ? 'photo' : 'describe')}
+                  disabled={(!description.trim() && !imageUri) || isResolving}
                 >
                   {isResolving ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
@@ -449,12 +563,16 @@ export function CreateFoodModal({
                   )}
                 </Pressable>
               </View>
-            </View>
+            </ScrollView>
           )}
 
           {/* ── Step: Photo ─────────────────────────────────────────── */}
           {step === 'photo' && (
-            <View style={styles.stepContainer}>
+            <ScrollView 
+              showsVerticalScrollIndicator={false} 
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.stepContainer}
+            >
               {imageUri && (
                 <Image source={{ uri: imageUri }} style={styles.photoPreview} />
               )}
@@ -468,7 +586,7 @@ export function CreateFoodModal({
                 maxLength={200}
               />
               <View style={styles.actionRow}>
-                <Pressable style={[styles.backBtn, { borderColor }]} onPress={() => setStep('choose')}>
+                <Pressable style={[styles.backBtn, { borderColor }]} onPress={handleBackToChoose}>
                   <Text style={[styles.backBtnText, { color: textSecondary }]}>Back</Text>
                 </Pressable>
                 <Pressable
@@ -483,26 +601,31 @@ export function CreateFoodModal({
                   )}
                 </Pressable>
               </View>
-            </View>
+            </ScrollView>
           )}
 
           {/* ── Step: Search Existing ───────────────────────────────── */}
           {step === 'search' && (
             <View style={styles.stepContainer}>
-              <View style={[styles.searchBar, { backgroundColor: inputBg, borderColor }]}>
-                <Ionicons name="search" size={18} color={textSecondary} />
-                <TextInput
-                  style={[styles.searchInput, { color: textPrimary }]}
-                  placeholder="Search foods (e.g. toor dal, olive oil)"
-                  placeholderTextColor={textSecondary}
-                  value={searchQuery}
-                  onChangeText={handleSearchInput}
-                  autoFocus
-                />
-                {isSearching && <ActivityIndicator size="small" color="#10B981" />}
+              <View style={styles.searchHeaderRow}>
+                <View style={[styles.searchBar, { backgroundColor: inputBg, borderColor, flex: 1 }]}>
+                  <Ionicons name="search" size={18} color={textSecondary} />
+                  <TextInput
+                    style={[styles.searchInput, { color: textPrimary }]}
+                    placeholder="Search foods (e.g. toor dal, olive oil)"
+                    placeholderTextColor={textSecondary}
+                    value={searchQuery}
+                    onChangeText={handleSearchInput}
+                    autoFocus
+                  />
+                  {isSearching && <ActivityIndicator size="small" color="#10B981" />}
+                </View>
+                <Pressable style={[styles.backBtn, { borderColor, paddingVertical: 10, paddingHorizontal: 14 }]} onPress={handleBackToChoose}>
+                  <Text style={[styles.backBtnText, { color: textSecondary }]}>Back</Text>
+                </Pressable>
               </View>
 
-              <ScrollView style={styles.searchResults} showsVerticalScrollIndicator={false}>
+              <ScrollView style={styles.searchResults} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 {searchResults.map((food) => (
                   <Pressable
                     key={food.id}
@@ -557,6 +680,13 @@ export function CreateFoodModal({
                   <Text style={[styles.compoundBannerText, { color: '#F59E0B' }]}>
                     🍳 Compound food — {resolvedFood.ingredients.length} ingredients detected
                   </Text>
+                </View>
+              )}
+
+              {/* Attached food photo preview if available */}
+              {imageUri && (
+                <View style={[styles.reviewPhotoCard, { borderColor }]}>
+                  <Image source={{ uri: imageUri }} style={styles.reviewPhotoPreview} />
                 </View>
               )}
 
@@ -659,11 +789,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
+  topSpacer: {
+    flex: 1,
+  },
   modalContent: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 24,
-    maxHeight: '90%',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 14,
+    maxHeight: '94%',
+    width: '100%',
+  },
+  searchHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   header: {
     flexDirection: 'row',
@@ -915,5 +1056,58 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+  },
+  attachedImageWrapper: {
+    position: 'relative',
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    marginBottom: 6,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  attachedImageThumbnail: {
+    width: 80,
+    height: 80,
+    borderRadius: 12,
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+  },
+  attachPhotoRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  attachPhotoBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  attachPhotoBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reviewPhotoCard: {
+    width: '100%',
+    height: 120,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    marginBottom: 14,
+  },
+  reviewPhotoPreview: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
   },
 });

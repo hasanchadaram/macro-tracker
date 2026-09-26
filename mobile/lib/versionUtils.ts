@@ -1,15 +1,18 @@
 import { Linking } from 'react-native';
 import Constants from 'expo-constants';
 import { supabase } from '@/lib/supabase';
-import type { AppUpdateInfo } from '@/lib/types';
+import type { AppUpdateInfo, UpdateLevel } from '@/lib/types';
 
 export interface CheckUpdateResult {
   success: boolean;
   hasUpdate: boolean;
+  updateLevel: UpdateLevel;
   currentVersion: string;
   currentVersionCode: number;
   latestVersion?: string;
   latestVersionCode?: number;
+  minSupportedVersionCode?: number | null;
+  title?: string;
   releaseNotes?: string | null;
   playStoreUrl?: string;
   error?: string;
@@ -17,8 +20,8 @@ export interface CheckUpdateResult {
 
 /**
  * Compares current version/build against latest published version/build.
- * Prioritizes integer build codes (e.g. versionCode 9 > 8).
- * Falls back to semantic version string comparison (e.g. 1.1.1 > 1.1.0).
+ * Prioritizes integer build codes (e.g. versionCode 12 > 11).
+ * Falls back to semantic version string comparison (e.g. 1.1.4 > 1.1.3).
  */
 export function isUpdateAvailable(
   currentVersion: string,
@@ -47,10 +50,11 @@ export function isUpdateAvailable(
 
 /**
  * Queries the Supabase app_updates table and compares against the current app build.
+ * Classifies updates into: 'none' | 'simple' | 'recommended' | 'mandatory'.
  */
 export async function checkForAppUpdate(): Promise<CheckUpdateResult> {
-  const currentVersion = Constants.expoConfig?.version || '1.1.2';
-  const currentVersionCode = Constants.expoConfig?.android?.versionCode || 10;
+  const currentVersion = Constants.expoConfig?.version || '1.1.4';
+  const currentVersionCode = Constants.expoConfig?.android?.versionCode || 12;
 
   try {
     const { data, error } = await supabase
@@ -66,6 +70,7 @@ export async function checkForAppUpdate(): Promise<CheckUpdateResult> {
       return {
         success: false,
         hasUpdate: false,
+        updateLevel: 'none',
         currentVersion,
         currentVersionCode,
         error: error.message,
@@ -76,6 +81,7 @@ export async function checkForAppUpdate(): Promise<CheckUpdateResult> {
       return {
         success: true,
         hasUpdate: false,
+        updateLevel: 'none',
         currentVersion,
         currentVersionCode,
       };
@@ -89,13 +95,33 @@ export async function checkForAppUpdate(): Promise<CheckUpdateResult> {
       updateInfo.latest_version_code
     );
 
+    let updateLevel: UpdateLevel = 'none';
+
+    if (hasUpdate) {
+      // 1. Mandatory if below min_supported_version_code OR update_type is explicitly 'mandatory'
+      if (
+        (typeof updateInfo.min_supported_version_code === 'number' &&
+          currentVersionCode < updateInfo.min_supported_version_code) ||
+        updateInfo.update_type === 'mandatory'
+      ) {
+        updateLevel = 'mandatory';
+      } else if (updateInfo.update_type === 'simple') {
+        updateLevel = 'simple';
+      } else {
+        updateLevel = 'recommended';
+      }
+    }
+
     return {
       success: true,
       hasUpdate,
+      updateLevel,
       currentVersion,
       currentVersionCode,
       latestVersion: updateInfo.latest_version,
       latestVersionCode: updateInfo.latest_version_code,
+      minSupportedVersionCode: updateInfo.min_supported_version_code,
+      title: updateInfo.title || 'Update Available',
       releaseNotes: updateInfo.release_notes,
       playStoreUrl: updateInfo.play_store_url,
     };
@@ -104,6 +130,7 @@ export async function checkForAppUpdate(): Promise<CheckUpdateResult> {
     return {
       success: false,
       hasUpdate: false,
+      updateLevel: 'none',
       currentVersion,
       currentVersionCode,
       error: err.message || 'Unknown network error',

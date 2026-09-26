@@ -251,12 +251,16 @@ export interface CheckInRecord {
   created_at: string;
 }
 
+export type UpdateLevel = 'none' | 'simple' | 'recommended' | 'mandatory';
+
 /** App update metadata stored in Supabase app_updates table */
 export interface AppUpdateInfo {
   id: string;
   latest_version: string;
   latest_version_code: number;
   min_supported_version_code?: number | null;
+  update_type: 'simple' | 'recommended' | 'mandatory';
+  title?: string | null;
   release_notes?: string | null;
   play_store_url: string;
   is_active: boolean;

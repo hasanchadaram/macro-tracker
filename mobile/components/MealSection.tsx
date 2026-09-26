@@ -41,15 +41,32 @@ export function MealSection({ title, icon, color, entries, onAddPress, onDeleteE
   const tipTimeout1 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimeout2 = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const dismissSwipeTip = React.useCallback((markSeen = true) => {
+    if (tipTimeout1.current) {
+      clearTimeout(tipTimeout1.current);
+      tipTimeout1.current = null;
+    }
+    if (tipTimeout2.current) {
+      clearTimeout(tipTimeout2.current);
+      tipTimeout2.current = null;
+    }
+    tipAnim.value = withTiming(0, { duration: 250, easing: Easing.inOut(Easing.ease) });
+    firstSwipeableRef.current?.close();
+    if (markSeen) {
+      AsyncStorage.setItem('has_seen_swipe_delete_tip_home', 'true').catch(() => {});
+    }
+  }, []);
+
   React.useEffect(() => {
     if (expanded && entries.length > 0) {
       checkSwipeTip();
+    } else {
+      dismissSwipeTip(false);
     }
     return () => {
-      if (tipTimeout1.current) clearTimeout(tipTimeout1.current);
-      if (tipTimeout2.current) clearTimeout(tipTimeout2.current);
+      dismissSwipeTip(false);
     };
-  }, [expanded, entries.length]);
+  }, [expanded]);
 
   const checkSwipeTip = async () => {
     try {
@@ -60,9 +77,7 @@ export function MealSection({ title, icon, color, entries, onAddPress, onDeleteE
             firstSwipeableRef.current.openRight();
             tipAnim.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.cubic) });
             tipTimeout2.current = setTimeout(() => {
-              firstSwipeableRef.current?.close();
-              AsyncStorage.setItem('has_seen_swipe_delete_tip_home', 'true');
-              tipAnim.value = withTiming(0, { duration: 300, easing: Easing.inOut(Easing.ease) });
+              dismissSwipeTip(true);
             }, 2500);
           }
         }, 800);
@@ -168,10 +183,14 @@ export function MealSection({ title, icon, color, entries, onAddPress, onDeleteE
                 <Swipeable
                   key={entry.id}
                   ref={index === 0 ? firstSwipeableRef : null}
+                  onSwipeableWillOpen={() => dismissSwipeTip(true)}
                   renderRightActions={() => (
                     <Pressable
                       style={styles.deleteButton}
-                      onPress={() => onDeleteEntry(entry)}
+                      onPress={() => {
+                        dismissSwipeTip(true);
+                        onDeleteEntry(entry);
+                      }}
                     >
                       <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
                     </Pressable>
